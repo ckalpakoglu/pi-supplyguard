@@ -10,7 +10,7 @@
  */
 
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import type { Decision, Finding } from "./decisions.ts";
 import type { SupplyChainEventClass, ToolCallClassification } from "./events.ts";
@@ -111,6 +111,10 @@ export function redact(value: unknown, depth = 0): unknown {
 
   if (value instanceof Date) return value.toISOString();
   if (value instanceof Error) return `${value.name}: ${redactString(value.message)}`;
+  // `Object.entries` on these is empty, so they would serialize as `{}` --
+  // indistinguishable from "there was nothing here". Say so instead.
+  if (value instanceof Map) return `[Map(${value.size})]`;
+  if (value instanceof Set) return `[Set(${value.size})]`;
 
   if (type === "object") {
     const out: Record<string, unknown> = {};
@@ -201,7 +205,8 @@ export async function detectGitBranch(repoRoot: string): Promise<string | undefi
     const raw = await readFile(gitPath, "utf8");
     const match = /^gitdir:\s*(.+)$/m.exec(raw);
     if (match?.[1] === undefined) return undefined;
-    gitDir = match[1].trim();
+    const declared = match[1].trim();
+    gitDir = isAbsolute(declared) ? declared : join(repoRoot, declared);
   } catch {
     // `.git` is a directory (EISDIR) or absent (ENOENT); fall through.
   }

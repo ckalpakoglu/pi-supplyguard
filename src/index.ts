@@ -80,8 +80,23 @@ interface ProjectContext {
   readonly repoRoot: string;
   readonly paths: SupplyGuardPaths;
   readonly loaded: LoadedConfig;
+  readonly loadedAt: number;
   readonly branch?: string;
 }
+
+/**
+ * How long a loaded configuration is reused before it is re-read.
+ *
+ * Without this, adding or tightening `.supplyguard.yaml` mid-session would
+ * have no effect until Pi restarted. Staleness is bounded and can only ever
+ * withhold a TIGHTENING for a few seconds: configuration layers may never
+ * weaken (see `tightenConfig`), so a stale copy is never more permissive than
+ * the file on disk.
+ *
+ * ponytail: time-based invalidation. Switch to stat/mtime comparison only if
+ * the reload ever shows up in a profile.
+ */
+const CONFIG_TTL_MS = 5_000;
 
 /** Walk up from `cwd` to the nearest directory containing `.git`. */
 async function resolveRepoRoot(cwd: string): Promise<string> {
@@ -142,8 +157,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   let sessionFloor: Profile | undefined;
 
   async function projectContext(cwd: string): Promise<ProjectContext> {
+    const at = now().getTime();
     const cached = projects.get(cwd);
-    if (cached !== undefined) return cached;
+    if (cached !== undefined && at - cached.loadedAt < CONFIG_TTL_MS) return cached;
 
     const repoRoot = await resolveRepoRoot(cwd);
     const paths = resolvePaths(repoRoot, options.env ?? process.env, options.home);
@@ -154,6 +170,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       repoRoot,
       paths,
       loaded,
+      loadedAt: at,
       ...(branch === undefined ? {} : { branch }),
     };
     projects.set(cwd, context);
@@ -228,48 +245,80 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     }
   }
 
+  /** The real tool-call path. Wrapped by `onToolCall`, which fails closed. */
+  async function handleToolCall(
+    event: ToolCallEvent,
+    ctx: ExtensionContext,
+  ): Promise<ToolCallEventResult | undefined> {
+    const project = await projectContext(ctx.cwd);
+    await announceConfigWarnings(project, ctx);
+
+    const profile = effective(project);
+    const engineCtx: EngineContext = {
+      repoRoot: project.repoRoot,
+      sessionId: ctx.sessionManager.getSessionId(),
+      profile,
+      hasUI: ctx.hasUI,
+      registry,
+      ui: uiPort(ctx),
+      audit: auditSink(project),
+      auditEnabled: project.loaded.config.auditEnabled,
+      now,
+      ...(project.branch === undefined ? {} : { branch: project.branch }),
+    };
+
+    const outcome = await evaluateToolCall(normalizeToolCall(event), engineCtx);
+
+    for (const warning of outcome.warnings) {
+      notify(ctx, `SupplyGuard: ${warning}`, "warning");
+    }
+
+    if (outcome.decision !== "allow") {
+      await rememberProfile(project, profile);
+    }
+
+    if (outcome.blocked) {
+      return { block: true, reason: `SupplyGuard (${profile}): ${outcome.reason}` };
+    }
+
+    if (outcome.decision === "warn") {
+      notify(ctx, `SupplyGuard (${profile}): ${outcome.reason}`, "warning");
+    }
+
+    // ALLOW: no opinion, proceed with normal Pi behavior.
+    return undefined;
+  }
+
   return {
     registry: () => registry,
     sessionProfileFloor: () => sessionFloor,
 
+    /**
+     * SECURITY: this whole body is guarded.
+     *
+     * `evaluateToolCall` already converts its own internal failures into a
+     * DENY, but the wiring above it -- resolving the repository, loading
+     * configuration, reading the session id -- used to be unguarded. A
+     * rejected `tool_call` handler is very likely treated by the host as "no
+     * opinion", which would turn a SupplyGuard crash into a silent policy
+     * bypass. Failing closed is loud and recoverable; failing open is neither.
+     */
     async onToolCall(event, ctx) {
-      const project = await projectContext(ctx.cwd);
-      await announceConfigWarnings(project, ctx);
-
-      const profile = effective(project);
-      const engineCtx: EngineContext = {
-        repoRoot: project.repoRoot,
-        sessionId: ctx.sessionManager.getSessionId(),
-        profile,
-        hasUI: ctx.hasUI,
-        registry,
-        ui: uiPort(ctx),
-        audit: auditSink(project),
-        auditEnabled: project.loaded.config.auditEnabled,
-        now,
-        ...(project.branch === undefined ? {} : { branch: project.branch }),
-      };
-
-      const outcome = await evaluateToolCall(normalizeToolCall(event), engineCtx);
-
-      for (const warning of outcome.warnings) {
-        notify(ctx, `SupplyGuard: ${warning}`, "warning");
+      try {
+        return await handleToolCall(event, ctx);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        notify(
+          ctx,
+          `SupplyGuard could not evaluate this tool call (${message}); failing closed. ` +
+            `Fix the underlying problem or disable the extension deliberately.`,
+          "error",
+        );
+        return {
+          block: true,
+          reason: `SupplyGuard: internal error (${message}); failing closed.`,
+        };
       }
-
-      if (outcome.decision !== "allow") {
-        await rememberProfile(project, profile);
-      }
-
-      if (outcome.blocked) {
-        return { block: true, reason: `SupplyGuard (${profile}): ${outcome.reason}` };
-      }
-
-      if (outcome.decision === "warn") {
-        notify(ctx, `SupplyGuard (${profile}): ${outcome.reason}`, "warning");
-      }
-
-      // ALLOW: no opinion, proceed with normal Pi behavior.
-      return undefined;
     },
 
     async statusCommand(_args, ctx) {
