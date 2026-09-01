@@ -1,0 +1,4 @@
+node_modules/
+
+# Pi session/runtime state (locks, transient agent state) — never committed.
+.pi/

@@ -1,0 +1,43 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+
+    "noEmit": true,
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+
+    /**
+     * CRITICAL: Pi loads src/index.ts through Node native type stripping, which
+     * erases types without evaluating them. Constructs that require emit --
+     * enums, const enums, namespaces with runtime value, parameter properties --
+     * would break at load time. This flag makes that a compile error instead of
+     * a runtime surprise.
+     */
+    "erasableSyntaxOnly": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+
+    /**
+     * The Pi host API is an optional peerDependency and is intentionally not
+     * installed (see types/pi-coding-agent.d.ts). skipLibCheck keeps us from
+     * type-checking declaration files we do not own.
+     */
+    "skipLibCheck": true,
+
+    /** Do not auto-pull ambient @types packages; we declare what we use. */
+    "types": [],
+
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true
+  },
+  "include": ["src", "test", "types"]
+}
