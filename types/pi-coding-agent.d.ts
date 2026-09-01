@@ -13,27 +13,92 @@
  * This is intentionally NOT a copy of upstream type definitions. Do not vendor
  * upstream `.d.ts` files here. Widen this surface only as SupplyGuard genuinely
  * starts using more of the host API, and keep it hand-written and reviewable.
+ *
+ * Verified against the host's `dist/core/extensions/types.d.ts`. If the host
+ * API diverges from these declarations, fix this file rather than casting at
+ * the call site.
  */
 declare module "@earendil-works/pi-coding-agent" {
-  /** Payload delivered to a `tool_call` handler. Narrow, deliberately partial. */
+  /** How the session is being driven. `json`/`print` have no interactive UI. */
+  export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
+  export type NotifyLevel = "info" | "warning" | "error";
+
+  export interface UIPromptOptions {
+    signal?: AbortSignal;
+    /** Milliseconds. On timeout: select/input resolve undefined, confirm false. */
+    timeout?: number;
+  }
+
+  export interface ExtensionUI {
+    select(
+      title: string,
+      options: readonly string[],
+      opts?: UIPromptOptions,
+    ): Promise<string | undefined>;
+    confirm(title: string, message: string, opts?: UIPromptOptions): Promise<boolean>;
+    input(
+      title: string,
+      placeholder?: string,
+      opts?: UIPromptOptions,
+    ): Promise<string | undefined>;
+    notify(message: string, level?: NotifyLevel): void | Promise<void>;
+  }
+
+  export interface SessionManager {
+    getSessionId(): string;
+  }
+
+  export interface ExtensionContext {
+    readonly cwd: string;
+    /**
+     * False in `json`/`print` mode, where UI methods are no-ops. Security
+     * decisions that need a human MUST check this and fail closed.
+     */
+    readonly hasUI: boolean;
+    readonly mode: ExtensionMode;
+    readonly ui: ExtensionUI;
+    readonly sessionManager: SessionManager;
+  }
+
+  /** Payload delivered to a `tool_call` handler, before the tool executes. */
   export interface ToolCallEvent {
     readonly toolName: string;
-    readonly args: unknown;
+    readonly toolCallId?: string;
+    /**
+     * Tool arguments. MUTABLE by design in the host: a handler may rewrite the
+     * call. SupplyGuard never does -- see the bypass note in `src/index.ts`.
+     */
+    input: Record<string, unknown>;
   }
 
   /**
-   * Returning `undefined` means "no opinion, proceed with normal Pi behavior".
-   * Enforcement result shapes are intentionally not modelled yet; M1 will
-   * introduce them alongside the decision model (ALLOW/WARN/ASK/DENY).
+   * Returning `undefined` means "no opinion, proceed".
+   * Returning `{ block: true }` prevents the tool from executing.
    */
-  export type ToolCallEventResult = undefined;
+  export interface ToolCallEventResult {
+    block?: boolean;
+    reason?: string;
+    terminate?: boolean;
+  }
+
+  export type ToolCallHandler = (
+    event: ToolCallEvent,
+    ctx: ExtensionContext,
+  ) =>
+    | Promise<ToolCallEventResult | undefined | void>
+    | ToolCallEventResult
+    | undefined
+    | void;
+
+  export interface CommandDefinition {
+    description?: string;
+    handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
+  }
 
   export interface ExtensionAPI {
-    on(
-      event: "tool_call",
-      handler: (
-        event: ToolCallEvent,
-      ) => Promise<ToolCallEventResult> | ToolCallEventResult,
-    ): void;
+    /** Handlers are awaited; blocking is guaranteed before tool execution. */
+    on(event: "tool_call", handler: ToolCallHandler): void;
+    registerCommand(name: string, definition: CommandDefinition): void;
   }
 }
