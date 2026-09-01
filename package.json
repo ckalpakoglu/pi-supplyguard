@@ -1,0 +1,30 @@
+{
+  "name": "pi-supplyguard",
+  "version": "0.1.0",
+  "description": "Supply-chain policy enforcement for Pi coding agents",
+  "type": "module",
+  "license": "Apache-2.0",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "supply-chain-security",
+    "coding-agent",
+    "application-security"
+  ],
+  "files": [
+    "src",
+    "docs",
+    "README.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
