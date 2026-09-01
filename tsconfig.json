@@ -31,8 +31,13 @@
      */
     "skipLibCheck": true,
 
-    /** Do not auto-pull ambient @types packages; we declare what we use. */
-    "types": [],
+    /**
+     * Ambient @types resolution is an explicit allow-list, not "whatever is in
+     * node_modules/@types". Only the human-approved, exact-pinned
+     * `@types/node` is loaded; anything else must be approved and added here
+     * deliberately.
+     */
+    "types": ["node"],
 
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
