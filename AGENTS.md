@@ -733,6 +733,25 @@ Follow this order unless the human explicitly changes it.
 - Chief/worker parity
 - bypass corpus
 
+## Delegation and Dependency Approval
+
+Human decision, 2026-09-01, taken when M2 switched enforcement on.
+
+Dependency mutations are **Chief-only**.
+
+A delegated worker runs headless. A `THIRD_PARTY_MUTATION` produces an `ASK`,
+and a headless `ASK` fails closed to `DENY` (invariant 7). A worker therefore
+cannot add or upgrade a dependency; the Chief performs that trust decision with
+a human present, then delegates the remaining work.
+
+This requires no bypass, no environment escape hatch, and no auto-approval path
+for headless sessions. Do not add one. A worker that needs a dependency is a
+signal for the Chief to perform the trust decision.
+
+Deferred to M4: brokering a worker's `ASK` up to the Chief UI, or issuing a
+scoped pre-approval at delegation time under the SPEC 17.2 one-shot override
+model.
+
 ## Review Requirements
 
 The Chief must inspect actual diffs and test output.

@@ -5,6 +5,8 @@
  * into these shapes. The core never learns what a package manager is.
  */
 
+import type { Decision } from "./decisions.ts";
+
 /** SPEC 6 -- canonical event classes. */
 export const SUPPLY_CHAIN_EVENT_CLASSES = [
   "DependencyAdd",
@@ -99,6 +101,17 @@ export type EventDetailValue = string | number | boolean;
  * on its value.
  */
 export interface SupplyChainEvent {
+  /**
+   * A floor the adapter asserts for this event, independent of profile.
+   *
+   * Some rules are invariants rather than profile preferences: a floating
+   * version or a checksum bypass is denied in every profile (SPEC 4.4, 10.2,
+   * 10.3). An adapter states that here; the engine folds it in with
+   * `mostRestrictive`, so it can only ever TIGHTEN the profile baseline and
+   * can never weaken it. The engine still learns nothing about the ecosystem
+   * -- it sees a decision, not a reason.
+   */
+  readonly minimumDecision?: Decision;
   readonly eventClass: SupplyChainEventClass;
   readonly ecosystem: string;
   readonly classification: ToolCallClassification;
