@@ -25,6 +25,11 @@ The canonical product and security design is `docs/SPEC.md`.
 
 When implementation choices are ambiguous, follow `docs/SPEC.md` rather than inventing new behavior.
 
+`docs/KNOWN-GAPS.md` records what SupplyGuard does **not** yet enforce, the
+deliberate decisions that can look like gaps, and the defect log. Keep it
+current: a new enforcement gap is documented in the commit that creates it, and
+a defect entry names the test that pins it.
+
 ## Development Model
 
 Use the configured Chief / side-agent workflow.
