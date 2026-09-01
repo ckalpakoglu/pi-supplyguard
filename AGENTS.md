@@ -25,6 +25,11 @@ The canonical product and security design is `docs/SPEC.md`.
 
 When implementation choices are ambiguous, follow `docs/SPEC.md` rather than inventing new behavior.
 
+`docs/KNOWN-GAPS.md` records what SupplyGuard does **not** yet enforce, the
+deliberate decisions that can look like gaps, and the defect log. Keep it
+current: a new enforcement gap is documented in the commit that creates it, and
+a defect entry names the test that pins it.
+
 ## Development Model
 
 Use the configured Chief / side-agent workflow.
@@ -732,6 +737,25 @@ Follow this order unless the human explicitly changes it.
 - headless behavior
 - Chief/worker parity
 - bypass corpus
+
+## Delegation and Dependency Approval
+
+Human decision, 2026-09-01, taken when M2 switched enforcement on.
+
+Dependency mutations are **Chief-only**.
+
+A delegated worker runs headless. A `THIRD_PARTY_MUTATION` produces an `ASK`,
+and a headless `ASK` fails closed to `DENY` (invariant 7). A worker therefore
+cannot add or upgrade a dependency; the Chief performs that trust decision with
+a human present, then delegates the remaining work.
+
+This requires no bypass, no environment escape hatch, and no auto-approval path
+for headless sessions. Do not add one. A worker that needs a dependency is a
+signal for the Chief to perform the trust decision.
+
+Deferred to M4: brokering a worker's `ASK` up to the Chief UI, or issuing a
+scoped pre-approval at delegation time under the SPEC 17.2 one-shot override
+model.
 
 ## Review Requirements
 

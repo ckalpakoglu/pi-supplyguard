@@ -4,10 +4,10 @@
  * Wiring only: this file connects the Pi host to the ecosystem-agnostic core.
  * Policy lives in `src/core`, ecosystem knowledge lives in `src/adapters`.
  *
- * M1 scope: `tool_call` interception, configuration, profiles, decisions,
- * audit and UI. NO ecosystem adapters are registered yet, so no supply-chain
- * events are produced and ordinary development is unaffected — while the full
- * pipeline is genuinely wired and exercised end to end.
+ * M1 established `tool_call` interception, configuration, profiles, decisions,
+ * audit and UI. M2 registers the first ecosystem adapter (Go), so Go command
+ * operations now produce real supply-chain events and are gated. Everything
+ * else still resolves to ALLOW: ordinary development is unaffected.
  *
  * KNOWN BYPASS VECTOR (documented, not fixed in M1)
  * -------------------------------------------------
@@ -29,6 +29,7 @@ import type {
   ToolCallEventResult,
 } from "@earendil-works/pi-coding-agent";
 
+import { createGoAdapter } from "./adapters/go/index.ts";
 import { createAdapterRegistry, type AdapterRegistry } from "./adapters/registry.ts";
 import type { ApprovalUi } from "./core/approval.ts";
 import {
@@ -57,7 +58,7 @@ import {
 import { loadState, saveState, setProjectState } from "./core/state.ts";
 
 export interface RuntimeOptions {
-  /** M1 default: an empty registry. Tests and later milestones inject one. */
+  /** Defaults to the production registry. Tests inject their own. */
   readonly registry?: AdapterRegistry;
   readonly env?: PathEnvironment;
   readonly home?: string;
@@ -148,7 +149,7 @@ function notify(
 }
 
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
-  const registry = options.registry ?? createAdapterRegistry();
+  const registry = options.registry ?? createAdapterRegistry([createGoAdapter()]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const configWarningsAnnounced = new Set<string>();
@@ -334,6 +335,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         )
         .join("\n");
 
+      const adapters = registry
+        .list()
+        .map((a) => a.id)
+        .join(", ");
+
       const lines = [
         "SupplyGuard",
         `  Effective profile    ${profile}`,
@@ -345,14 +351,14 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Config sources`,
         sources,
         `  Ecosystem adapters   ${registry.size()} registered${
-          registry.size() === 0 ? " (M1 skeleton: no adapters yet)" : ""
+          registry.size() === 0 ? " (none)" : ` (${adapters})`
         }`,
         `  Release cooldown     ${config.releaseAgeMinimumDays} days (enforced from M4)`,
         `  Audit                ${config.auditEnabled ? "enabled" : "disabled"}  ${project.paths.audit}`,
         `  Local state          ${project.paths.state}`,
         `  Session              ${ctx.hasUI ? "interactive" : "headless"} (${ctx.mode})`,
-        `  Enforcement          M1 skeleton — tool calls are classified and gated;`,
-        `                       ecosystem detection arrives with the Go adapter (M2).`,
+        `  Enforcement          Go command gate active (M2). Manifest`,
+        `                       reconciliation and vendor state arrive in M3.`,
       ];
 
       if (project.loaded.warnings.length > 0) {

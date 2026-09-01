@@ -24,6 +24,7 @@ import {
   evaluateLocal,
   explain,
   localFinding,
+  mostRestrictive,
   withExternalEvidence,
   type Decision,
   type Evaluation,
@@ -105,7 +106,10 @@ function baselineFindings(
   }
 
   for (const event of events) {
-    const decision = baselineForEvent(event.eventClass, profile);
+    const baseline = baselineForEvent(event.eventClass, profile);
+    // An adapter may assert a floor for an invariant that does not vary by
+    // profile. mostRestrictive keeps this monotone: it can only tighten.
+    const decision = mostRestrictive(baseline, event.minimumDecision ?? "allow");
     findings.push(
       localFinding(
         "profile-baseline",
