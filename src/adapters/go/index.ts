@@ -15,18 +15,39 @@
  * behavior, so `test/go/adapter.test.ts` pins it. Brokered or pre-scoped
  * worker approval is deferred to M4.
  *
- * SCOPE: M2 is the command gate only. Detecting indirect mutation of go.mod
- * through `sed`, Python or a generated script is M3's manifest-snapshot work
- * (SPEC 14); intercepting commands is explicitly not sufficient on its own.
+ * SCOPE: M2 was the command gate only. M3 adds the other half of SPEC 14 --
+ * the file mutations a command gate structurally cannot see (`sed`, Python, a
+ * generated script) become semantic events through `inspectFileMutation`, and
+ * the vendor model becomes enforceable through `inspectProjectState`.
  */
 
 import type {
   AdapterContext,
+  AdapterProjectStateResult,
   AdapterToolCallResult,
   EcosystemAdapter,
+  ProjectDecisionContext,
+  ProjectDecisionRequest,
+  ProjectStateContext,
 } from "../registry.ts";
 import type { NormalizedToolCall, SupplyChainEvent } from "../../core/events.ts";
+import type { FileMutation } from "../../core/manifest.ts";
 import { analyzeCommand, GO_ECOSYSTEM, type GoOperation } from "./commands.ts";
+import {
+  diffGoMod,
+  diffGoSum,
+  isLocalReplaceTarget,
+  parseGoMod,
+  parseGoSum,
+  type GoModChange,
+} from "./modfile.ts";
+import {
+  detectGoProject,
+  GO_MOD,
+  GO_SENSITIVE_PATHS,
+  GO_SUM,
+  VENDOR_MODULES,
+} from "./project.ts";
 
 /**
  * Pull the shell command out of a tool call.
@@ -55,9 +76,313 @@ function toEvent(operation: GoOperation): SupplyChainEvent {
   };
 }
 
+/** Project decision id for the SPEC 9.2 vendor-model question. */
+export const VENDOR_MODE_DECISION = "go.vendorMode";
+export const VENDOR_ENFORCE = "enforce";
+export const VENDOR_OPTIONAL = "optional";
+
+function mutationEvent(
+  eventClass: SupplyChainEvent["eventClass"],
+  summary: string,
+  extra: {
+    readonly artifact?: string;
+    readonly version?: string;
+    readonly minimumDecision?: SupplyChainEvent["minimumDecision"];
+    readonly detail?: SupplyChainEvent["detail"];
+  } = {},
+): SupplyChainEvent {
+  return {
+    eventClass,
+    ecosystem: GO_ECOSYSTEM,
+    // An observed manifest change IS a third-party trust mutation, whatever
+    // the tool call that produced it was classified as (SPEC 14).
+    classification: "THIRD_PARTY_MUTATION",
+    summary,
+    ...(extra.artifact === undefined ? {} : { artifact: extra.artifact }),
+    ...(extra.version === undefined ? {} : { version: extra.version }),
+    ...(extra.minimumDecision === undefined
+      ? {}
+      : { minimumDecision: extra.minimumDecision }),
+    ...(extra.detail === undefined ? {} : { detail: extra.detail }),
+  };
+}
+
+/** Translate one semantic `go.mod` change into a normalized event (SPEC 10.5). */
+function goModChangeEvent(change: GoModChange): SupplyChainEvent {
+  switch (change.kind) {
+    case "add":
+      return mutationEvent(
+        "DependencyAdd",
+        `go.mod now requires ${change.require.path} ${change.require.version}, ` +
+          `added outside the SupplyGuard gate`,
+        { artifact: change.require.path, version: change.require.version },
+      );
+    case "upgrade":
+      return mutationEvent(
+        "DependencyUpgrade",
+        `go.mod moved ${change.require.path} from ${change.from} to ${change.require.version} ` +
+          `outside the SupplyGuard gate`,
+        { artifact: change.require.path, version: change.require.version },
+      );
+    case "downgrade":
+      return mutationEvent(
+        "DependencyDowngrade",
+        `go.mod moved ${change.require.path} back from ${change.from} to ` +
+          `${change.require.version} outside the SupplyGuard gate`,
+        { artifact: change.require.path, version: change.require.version },
+      );
+    case "remove":
+      return mutationEvent(
+        "DependencyRemove",
+        `go.mod no longer requires ${change.path} (was ${change.fromVersion})`,
+        { artifact: change.path, version: change.fromVersion },
+      );
+    case "indirect-flag":
+      return mutationEvent(
+        "LockfileMutation",
+        `go.mod re-marked ${change.require.path} as ` +
+          `${change.require.indirect ? "indirect" : "a direct requirement"}`,
+        { artifact: change.require.path, version: change.require.version },
+      );
+    case "replace-add":
+    case "replace-change": {
+      const remote = !isLocalReplaceTarget(change.replace.to);
+      return mutationEvent(
+        "DependencyReplace",
+        // SPEC 10.5: a remote replace redirects a module to third-party code
+        // and is higher risk than a local development replace.
+        `go.mod ${change.kind === "replace-add" ? "adds" : "changes"} a ` +
+          `${remote ? "REMOTE" : "local"} replace of ${change.replace.from} => ` +
+          `${change.replace.to}${change.replace.version === undefined ? "" : ` ${change.replace.version}`}`,
+        {
+          artifact: change.replace.from,
+          detail: { target: change.replace.to, remote },
+          ...(change.replace.version === undefined ? {} : { version: change.replace.version }),
+        },
+      );
+    }
+    case "replace-remove":
+      return mutationEvent("DependencyReplace", `go.mod removes the replace of ${change.from}`, {
+        artifact: change.from,
+      });
+    case "exclude-add":
+      return mutationEvent(
+        "LockfileMutation",
+        `go.mod excludes ${change.exclude.path} ${change.exclude.version}`,
+        { artifact: change.exclude.path, version: change.exclude.version },
+      );
+    case "exclude-remove":
+      return mutationEvent("LockfileMutation", `go.mod no longer excludes ${change.path}`, {
+        artifact: change.path,
+      });
+    case "other":
+      return mutationEvent("LockfileMutation", `go.mod changed: ${change.summary}`);
+  }
+}
+
+function goModEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
+  if (!mutation.existsAfter) {
+    return [
+      mutationEvent(
+        "LockfileMutation",
+        "go.mod was deleted; the project's dependency requirements are gone",
+      ),
+    ];
+  }
+
+  const diff = diffGoMod(
+    parseGoMod(mutation.before ?? ""),
+    parseGoMod(mutation.after ?? ""),
+  );
+  // A hash change with no semantic change is reformatting or a comment edit.
+  // Reporting it as a dependency event would be false; reporting nothing is
+  // correct, because the parser accounted for every line.
+  return diff.changes.map(goModChangeEvent);
+}
+
+function goSumEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
+  if (!mutation.existsAfter) {
+    // Deleting go.sum removes the checksums Go verifies downloads against.
+    // That is an integrity-control bypass, not bookkeeping (SPEC 10.3).
+    return [
+      mutationEvent(
+        "ChecksumBypass",
+        "go.sum was deleted, removing the checksums Go verifies module downloads against",
+        { minimumDecision: "deny" },
+      ),
+    ];
+  }
+
+  const diff = diffGoSum(parseGoSum(mutation.before ?? ""), parseGoSum(mutation.after ?? ""));
+  if (diff.added.length === 0 && diff.removed.length === 0) return [];
+  return [
+    mutationEvent(
+      "LockfileMutation",
+      `go.sum changed outside the SupplyGuard gate ` +
+        `(${diff.added.length} line(s) added, ${diff.removed.length} removed)`,
+      { detail: { added: diff.added.length, removed: diff.removed.length } },
+    ),
+  ];
+}
+
+/**
+ * Classify an observed change to a tracked Go file.
+ *
+ * This is the half of SPEC 14 that command interception cannot reach. The
+ * events produced here are indistinguishable, to the engine, from the ones the
+ * command gate produces -- which is the point: `sed -i go.mod` and
+ * `go get` reach the same trust decision.
+ */
+function inspectGoFileMutation(mutation: FileMutation): readonly SupplyChainEvent[] {
+  if (!mutation.contentAvailable) {
+    return [
+      mutationEvent(
+        "LockfileMutation",
+        `${mutation.path} changed, but its content was too large to classify; ` +
+          `treating the change as an unreviewed manifest mutation`,
+      ),
+    ];
+  }
+
+  if (mutation.path === GO_MOD) return goModEvents(mutation);
+  if (mutation.path === GO_SUM) return goSumEvents(mutation);
+  if (mutation.path === VENDOR_MODULES) {
+    return [
+      mutationEvent(
+        "LockfileMutation",
+        `${VENDOR_MODULES} changed outside the SupplyGuard gate; the vendor tree no ` +
+          `longer necessarily reflects a reviewed dependency graph`,
+      ),
+    ];
+  }
+  // go.work / go.work.sum: workspace-level requirements and checksums.
+  return [
+    mutationEvent(
+      "LockfileMutation",
+      `${mutation.path} changed outside the SupplyGuard gate`,
+    ),
+  ];
+}
+
 export function createGoAdapter(): EcosystemAdapter {
   return {
     id: GO_ECOSYSTEM,
+
+    sensitivePaths: () => GO_SENSITIVE_PATHS,
+
+    inspectFileMutation: (mutation: FileMutation) => inspectGoFileMutation(mutation),
+
+    /**
+     * SPEC 9.2 -- ask ONCE whether to keep enforcing an existing vendor model.
+     *
+     * Only asked when a vendor tree exists: there is nothing to keep enforcing
+     * otherwise. Paranoid does not ask, because it has no weakening choice to
+     * offer (SPEC 4.3).
+     */
+    async projectDecisions(
+      ctx: ProjectDecisionContext,
+    ): Promise<readonly ProjectDecisionRequest[]> {
+      if (ctx.profile === "paranoid") return [];
+      if (ctx.decisions[VENDOR_MODE_DECISION] !== undefined) return [];
+
+      const project = await detectGoProject(ctx.repoRoot);
+      if (!project.hasVendorTree) return [];
+
+      return [
+        {
+          id: VENDOR_MODE_DECISION,
+          question:
+            "SupplyGuard — vendored Go dependencies detected.\n\n" +
+            "Continue enforcing the repository vendor model?",
+          options: [
+            { label: "Yes — keep enforcing vendoring", value: VENDOR_ENFORCE },
+            { label: "No — do not enforce vendoring", value: VENDOR_OPTIONAL },
+          ],
+          recommended: VENDOR_ENFORCE,
+          // No human, no weakening: the repository already vendors, so the
+          // conservative answer is to keep its model.
+          headlessValue: VENDOR_ENFORCE,
+          headlessNote:
+            "headless session: kept enforcing the existing Go vendor model without asking",
+        },
+      ];
+    },
+
+    async describe(ctx: ProjectDecisionContext): Promise<readonly string[]> {
+      const project = await detectGoProject(ctx.repoRoot);
+      if (!project.isGoProject) return ["go: no Go project detected"];
+
+      const enforced =
+        ctx.profile === "paranoid" ||
+        (project.hasVendorTree && ctx.decisions[VENDOR_MODE_DECISION] !== VENDOR_OPTIONAL);
+
+      const lines = [
+        `go: go.mod ${project.hasGoMod ? "present" : "absent"}, ` +
+          `go.sum ${project.hasGoSum ? "present" : "absent"}` +
+          `${project.hasGoWork ? ", go.work present" : ""}`,
+        `go: vendor ${project.vendorState} (${enforced ? "enforced" : "not enforced"})`,
+      ];
+      for (const reason of project.driftReasons) lines.push(`go:   drift — ${reason}`);
+      return lines;
+    },
+
+    /**
+     * Vendor state (SPEC 9.3, 9.4).
+     *
+     * Drift is derived from `go.mod` versus `vendor/modules.txt` on disk, so it
+     * survives a restart and reflects out-of-band edits.
+     */
+    async inspectProjectState(ctx: ProjectStateContext): Promise<AdapterProjectStateResult> {
+      const project = await detectGoProject(ctx.repoRoot);
+      if (!project.isGoProject) return { events: [] };
+
+      const events: SupplyChainEvent[] = [];
+      const notes: string[] = [];
+
+      const enforced =
+        ctx.profile === "paranoid" ||
+        (project.hasVendorTree &&
+          ctx.decisions[VENDOR_MODE_DECISION] !== VENDOR_OPTIONAL);
+
+      if (enforced && project.vendorState === "stale") {
+        events.push({
+          eventClass: "VendorDrift",
+          ecosystem: GO_ECOSYSTEM,
+          classification: "THIRD_PARTY_CAPABLE",
+          summary:
+            `the vendor tree no longer matches go.mod: ${project.driftReasons.join("; ")}. ` +
+            `Run \`go mod vendor\` to make the vendored code match the reviewed graph.`,
+          detail: { reasons: project.driftReasons.length },
+        });
+      }
+
+      if (project.hasGoMod && !project.hasVendorTree) {
+        if (ctx.profile === "paranoid" && ctx.classification === "THIRD_PARTY_MUTATION") {
+          // SPEC 9.3: paranoid denies a dependency-changing operation until
+          // vendoring is established. Build and test are left alone -- the gate
+          // is on mutation, not on working in the repository.
+          events.push({
+            eventClass: "VendorDrift",
+            ecosystem: GO_ECOSYSTEM,
+            classification: "THIRD_PARTY_MUTATION",
+            summary:
+              "paranoid requires a vendored dependency tree before dependency-changing " +
+              "operations; this repository has no vendor/modules.txt",
+            minimumDecision: "deny",
+          });
+        } else if (ctx.profile === "hardened") {
+          // SPEC 9.3 hardened: recommend vendoring, allow continuing without
+          // it. SupplyGuard does not run `go mod vendor`, so the recommendation
+          // is recorded as audit evidence rather than dressed up as a gate.
+          notes.push(
+            "hardened profile: this Go project is not vendored; `go mod vendor` would let " +
+              "builds and tests run from reviewed code",
+          );
+        }
+      }
+
+      return notes.length === 0 ? { events } : { events, notes };
+    },
 
     inspectToolCall(call: NormalizedToolCall, _ctx: AdapterContext): AdapterToolCallResult {
       const command = shellCommand(call);
@@ -75,10 +400,12 @@ export function createGoAdapter(): EcosystemAdapter {
       // classes such as SecurityBypass deny in every profile and would flatten
       // that gradation.
       //
-      // ponytail: the specific reason (`analysis.notes`) does not reach the
-      // audit record, because the adapter contract has no notes channel. Add
-      // one in M3, when `inspectFileMutation` widens the contract anyway.
-      return { classification: analysis.classification, events };
+      return {
+        classification: analysis.classification,
+        events,
+        expectsManifestChange: analysis.writesManifests,
+        ...(analysis.notes.length === 0 ? {} : { notes: analysis.notes }),
+      };
     },
   };
 }

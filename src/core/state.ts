@@ -14,15 +14,30 @@ import { dirname, join } from "node:path";
 import { isProfile, type Profile } from "./profiles.ts";
 
 /**
+ * One answered ask-once project question (SPEC 9.2, 13.3, 18.2).
+ *
+ * Only answers a HUMAN gave are stored. A value SupplyGuard picked because no
+ * human was reachable is deliberately not persisted: writing it down would
+ * turn "nobody was asked" into "somebody decided".
+ */
+export interface ProjectDecisionState {
+  readonly value: string;
+  readonly decidedAt: string;
+}
+
+/**
  * Per-project remembered state.
  *
- * M1 records only what M1 can honestly know. Fields for later milestones
- * (Socket Firewall choice, vendor mode -- SPEC 18.2) are added by the
- * milestones that implement them.
+ * SPEC 18.2 sketches this as nested per-subsystem objects (`go.vendorMode`,
+ * `socket.firewallDecision`). It is stored here as one flat map keyed by the
+ * adapter/provider-namespaced decision id, so the core needs no schema for
+ * every ecosystem it will ever carry -- `decisions["go.vendorMode"]` holds
+ * exactly what the SPEC example calls `go.vendorMode`.
  */
 export interface ProjectState {
   readonly lastEffectiveProfile?: Profile;
   readonly lastSeenAt?: string;
+  readonly decisions?: Readonly<Record<string, ProjectDecisionState>>;
 }
 
 export interface SupplyGuardState {
@@ -41,7 +56,11 @@ const MAX_STATE_BYTES = 1024 * 1024;
 function parseProjectState(raw: unknown): ProjectState | undefined {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
   const record = raw as Record<string, unknown>;
-  const state: { lastEffectiveProfile?: Profile; lastSeenAt?: string } = {};
+  const state: {
+    lastEffectiveProfile?: Profile;
+    lastSeenAt?: string;
+    decisions?: Record<string, ProjectDecisionState>;
+  } = {};
 
   const profile = record["lastEffectiveProfile"];
   if (isProfile(profile)) state.lastEffectiveProfile = profile;
@@ -49,7 +68,29 @@ function parseProjectState(raw: unknown): ProjectState | undefined {
   const seenAt = record["lastSeenAt"];
   if (typeof seenAt === "string") state.lastSeenAt = seenAt;
 
+  const decisions = parseDecisions(record["decisions"]);
+  if (decisions !== undefined) state.decisions = decisions;
+
   return state;
+}
+
+function parseDecisions(
+  raw: unknown,
+): Record<string, ProjectDecisionState> | undefined {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return undefined;
+
+  const decisions: Record<string, ProjectDecisionState> = {};
+  for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) continue;
+    const entry = value as Record<string, unknown>;
+    const answer = entry["value"];
+    const decidedAt = entry["decidedAt"];
+    // A stored answer without both fields is not trusted: an answer with no
+    // recorded time is not evidence that a human ever gave it.
+    if (typeof answer !== "string" || typeof decidedAt !== "string") continue;
+    decisions[id] = { value: answer, decidedAt };
+  }
+  return Object.keys(decisions).length === 0 ? undefined : decisions;
 }
 
 /** Interpret an untrusted parsed state document; unknown shapes are dropped. */
@@ -121,4 +162,24 @@ export function setProjectState(
     version: 1,
     projects: { ...state.projects, [repoRoot]: { ...existing, ...patch } },
   };
+}
+
+/** Pure update: record one answered project question (SPEC 9.2, 18.2). */
+export function setProjectDecision(
+  state: SupplyGuardState,
+  repoRoot: string,
+  id: string,
+  decision: ProjectDecisionState,
+): SupplyGuardState {
+  const existing = state.projects[repoRoot] ?? {};
+  return setProjectState(state, repoRoot, {
+    decisions: { ...existing.decisions, [id]: decision },
+  });
+}
+
+export function getProjectDecisions(
+  state: SupplyGuardState,
+  repoRoot: string,
+): Readonly<Record<string, ProjectDecisionState>> {
+  return state.projects[repoRoot]?.decisions ?? {};
 }
