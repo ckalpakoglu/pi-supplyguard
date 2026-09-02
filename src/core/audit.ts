@@ -144,6 +144,8 @@ export const AUDIT_RECORD_KINDS = [
   "command",
   // An ask-once project question and how it was answered (SPEC 9.2, 13.3).
   "project-decision",
+  // The agent's stated rationale for a dependency (SPEC 11.2).
+  "justification",
 ] as const;
 
 export type AuditRecordKind = (typeof AUDIT_RECORD_KINDS)[number];

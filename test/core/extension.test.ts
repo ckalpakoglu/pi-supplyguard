@@ -12,9 +12,10 @@ import { test } from "node:test";
 
 import supplyguard from "../../src/index.ts";
 
-test("the default export registers the tool_call hook and both commands", () => {
+test("the default export registers the tool_call hook, the commands and the tool", () => {
   const events: string[] = [];
   const commands: string[] = [];
+  const tools: { name: string; parameters: unknown }[] = [];
 
   supplyguard({
     on: (event: string) => {
@@ -23,8 +24,19 @@ test("the default export registers the tool_call hook and both commands", () => 
     registerCommand: (name: string) => {
       commands.push(name);
     },
+    registerTool: (tool: { name: string; parameters: unknown }) => {
+      tools.push(tool);
+    },
   } as never);
 
   assert.deepEqual(events, ["tool_call"], "the gate is the whole point");
   assert.deepEqual(commands, ["supplyguard-status", "supplyguard-profile"]);
+  assert.deepEqual(
+    tools.map((t) => t.name),
+    ["supplyguard_justify_dependency"],
+  );
+
+  // The schema reaches the model verbatim, so it has to be plain JSON Schema
+  // rather than anything that needs a builder at runtime.
+  assert.deepEqual(JSON.parse(JSON.stringify(tools[0]?.parameters)), tools[0]?.parameters);
 });

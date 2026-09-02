@@ -52,6 +52,13 @@ import {
   readManifestSnapshot,
   type ManifestSnapshot,
 } from "./manifest.ts";
+import {
+  describeJustification,
+  JUSTIFY_TOOL,
+  needsJustification,
+  type Justification,
+  type JustificationStore,
+} from "./justification.ts";
 import { baselineForClassification, baselineForEvent, type Profile } from "./profiles.ts";
 import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/registry.ts";
 
@@ -115,6 +122,14 @@ export interface EngineContext {
    */
   readonly manifestChangeExpected?: boolean;
   readonly resolveProjectDecision?: ProjectDecisionResolver;
+  /**
+   * Pending dependency justifications (SPEC 11.2), recorded by the agent
+   * through the `supplyguard_justify_dependency` tool.
+   *
+   * Absent means the requirement is not enforced -- which is only ever the case
+   * in tests of the pre-M4 pipeline. The Pi wiring layer always supplies one.
+   */
+  readonly justifications?: JustificationStore;
 }
 
 export interface EngineOutcome {
@@ -188,13 +203,75 @@ function approvalLines(
   call: NormalizedToolCall,
   events: readonly SupplyChainEvent[],
   evaluation: Evaluation,
+  justifications: ReadonlyMap<string, Justification>,
 ): string[] {
   const lines = [`Tool: ${call.toolName}`];
-  for (const event of events) lines.push(describeEvent(event));
+  for (const event of events) {
+    lines.push(describeEvent(event));
+    // SPEC 11.3: the human reads the agent's own rationale next to the change
+    // it is asking for, not just the module name.
+    const justification = justifications.get(describeEvent(event));
+    if (justification !== undefined) lines.push(...describeJustification(justification));
+  }
   for (const finding of evaluation.findings) {
     lines.push(`- [${finding.decision}] ${finding.message}`);
   }
   return lines;
+}
+
+/**
+ * Require a justification for every new trust decision (SPEC 11.2).
+ *
+ * SECURITY: a missing justification is a DENY, not a silently thinner approval
+ * prompt. If an unjustified dependency merely asked, the tool would be
+ * decorative -- the agent would never call it, and the human would keep
+ * approving decisions with no stated purpose, which is the situation SPEC 11
+ * exists to end. The denial names the tool, so the agent can correct itself.
+ *
+ * The justifications collected here are CONSUMED: one artifact, one version,
+ * one execution (SPEC 17.2).
+ */
+function collectJustifications(
+  events: readonly SupplyChainEvent[],
+  store: JustificationStore | undefined,
+): { readonly findings: LocalFinding[]; readonly used: Map<string, Justification> } {
+  const findings: LocalFinding[] = [];
+  const used = new Map<string, Justification>();
+  if (store === undefined) return { findings, used };
+
+  for (const event of events) {
+    if (!needsJustification(event)) continue;
+    const artifact = event.artifact ?? "";
+    const version = event.version ?? "";
+
+    const justification = store.take(artifact, version);
+    if (justification === undefined) {
+      findings.push(
+        localFinding(
+          "justification",
+          "missing-justification",
+          "deny",
+          `${artifact}@${version} has no recorded justification. The agent must call ` +
+            `\`${JUSTIFY_TOOL}\` with the exact module and version, what it is for, and ` +
+            `why the standard library is insufficient, before this operation can be ` +
+            `put to a human.`,
+        ),
+      );
+      continue;
+    }
+
+    used.set(describeEvent(event), justification);
+    findings.push(
+      localFinding(
+        "justification",
+        "justification-recorded",
+        "ask",
+        `${artifact}@${version} was justified by the agent: ${justification.purpose}`,
+      ),
+    );
+  }
+
+  return { findings, used };
 }
 
 function primaryEvent(
@@ -344,7 +421,12 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
 
   const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events];
 
-  let evaluation = evaluateLocal(baselineFindings(classification, events, ctx.profile));
+  const justified = collectJustifications(events, ctx.justifications);
+
+  let evaluation = evaluateLocal([
+    ...baselineFindings(classification, events, ctx.profile),
+    ...justified.findings,
+  ]);
 
   if (errors.length > 0) {
     const unknownRiskDecision = baselineForClassification("UNKNOWN_RISK", ctx.profile);
@@ -387,7 +469,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     const result = await requestHumanApproval(
       {
         title: "SupplyGuard — approval required",
-        lines: approvalLines(call, events, evaluation),
+        lines: approvalLines(call, events, evaluation, justified.used),
         profile: ctx.profile,
       },
       ctx.ui,

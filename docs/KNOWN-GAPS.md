@@ -1,6 +1,8 @@
 # Known Gaps and Defect Log
 
-**Status:** M1, M2 and M3 complete. M4–M9 not started.
+**Status:** M1, M2 and M3 complete. M4 partially complete — dependency
+justification is enforced; release cooldown and scoped overrides are not.
+M5–M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -109,14 +111,22 @@ nothing about any of them:
 | Capability | Milestone |
 |---|---|
 | Release cooldown / minimum release age | M4 |
-| Scoped one-shot overrides, dependency justification | M4 |
+| Scoped one-shot overrides with a reason | M4 |
 | Trust corpus, typosquatting, repository-squatting | M5 |
 | Vulnerability data (OSV) | M6 |
 | Socket artifact/manifest scans, Firewall, provider health | M7 |
 
 `config.releaseAgeMinimumDays` is parsed and carried through the precedence
 chain so the layering is testable, but **nothing consumes it**. `/supplyguard-status`
-labels it "enforced from M4" for exactly this reason.
+labels it "enforced from M4" for exactly this reason. Release age needs a
+publication date, which means an outbound request to the Go module proxy — the
+first network call SupplyGuard would ever make, and a design decision in its own
+right (see `HANDOFF.md`).
+
+The approval object is therefore still partial. SPEC §11.2 lists release age,
+vulnerability findings, similarity findings and transitive impact alongside the
+purpose and stdlib fields; only the agent-supplied half exists today. The
+approval prompt shows what it has and does not pretend the rest was checked.
 
 ### 1.5 The Go vendor model is narrower than SPEC §9.3 describes
 
@@ -294,7 +304,30 @@ Removing a requirement reduces third-party surface, and `DependencyRemove` has a
 (`ask`), and the most restrictive wins — so removal still asks. It mutates the
 dependency graph and runs the resolver, so gating it is correct.
 
-### 2.6 Delegated workers cannot mutate dependencies at all
+### 2.6 An unjustified dependency is denied, not merely asked about
+
+SPEC §11.2 says a dependency approval REQUIRES a purpose, whether the standard
+library was considered, and why it is insufficient. Those are the agent's
+answers, so SupplyGuard registers `supplyguard_justify_dependency` and denies
+dependency operations with no matching justification, naming the tool in the
+refusal.
+
+Asking anyway, with the fields blank, was the alternative. It would make the
+tool decorative: the agent would never call it, and the human would keep
+approving changes with no stated purpose — the situation SPEC §11 exists to end.
+
+The requirement applies to dependency events from the *manifest* as well as from
+the command gate, deliberately. If only commands needed a justification, then
+`sed -i go.mod` would be the cheaper way to add a dependency, and the incentive
+gradient would point straight at the bypass M3 exists to close. The cost is that
+a human hand-editing `go.mod` mid-session sees a refusal until the agent records
+a rationale — or reverts the edit.
+
+Recording a justification grants nothing: it is evidence at the gate, the human
+still decides, and it is consumed by one operation on one version (SPEC §11.3,
+§17.2).
+
+### 2.7 Delegated workers cannot mutate dependencies at all
 
 Human decision, 2026-09-01, recorded in `AGENTS.md`. A headless worker's `ASK`
 fails closed, so the Chief performs dependency trust decisions with a human

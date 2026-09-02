@@ -91,6 +91,58 @@ declare module "@earendil-works/pi-coding-agent" {
     | undefined
     | void;
 
+  /** Text returned to the model from a tool. */
+  export interface TextContent {
+    type: "text";
+    text: string;
+  }
+
+  export interface AgentToolResult {
+    content: TextContent[];
+    details?: unknown;
+    isError?: boolean;
+  }
+
+  /**
+   * Parameter schema for a registered tool.
+   *
+   * The host types this as a TypeBox `TSchema`, and injects `typebox` as a
+   * virtual module for extensions. We declare the plain JSON-Schema shape
+   * instead and hand-write the object: the host passes `parameters` straight
+   * through to the model as the tool's schema, and importing a schema builder
+   * to produce an object literal would add a dependency surface for nothing.
+   *
+   * SECURITY: this schema is a hint to the model, not a guarantee. Arguments
+   * arriving at `execute` are untrusted input and are validated there.
+   */
+  export interface ToolParameterSchema {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: readonly string[];
+    additionalProperties?: boolean;
+  }
+
+  export interface ToolDefinition {
+    /** Tool name used in LLM tool calls. */
+    name: string;
+    /** Human-readable label for the UI. */
+    label: string;
+    /** Description shown to the model. */
+    description: string;
+    /** One-line entry in the system prompt's Available tools section. */
+    promptSnippet?: string;
+    /** Guideline bullets appended to the system prompt while this tool is active. */
+    promptGuidelines?: string[];
+    parameters: ToolParameterSchema;
+    execute(
+      toolCallId: string,
+      params: unknown,
+      signal: AbortSignal | undefined,
+      onUpdate: unknown,
+      ctx: ExtensionContext,
+    ): Promise<AgentToolResult>;
+  }
+
   export interface CommandDefinition {
     description?: string;
     handler: (args: string, ctx: ExtensionContext) => Promise<void> | void;
@@ -100,5 +152,6 @@ declare module "@earendil-works/pi-coding-agent" {
     /** Handlers are awaited; blocking is guaranteed before tool execution. */
     on(event: "tool_call", handler: ToolCallHandler): void;
     registerCommand(name: string, definition: CommandDefinition): void;
+    registerTool(tool: ToolDefinition): void;
   }
 }

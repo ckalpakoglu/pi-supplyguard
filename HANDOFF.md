@@ -32,7 +32,7 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M1 | Pi skeleton: `tool_call` hook, config, profiles, decisions, audit, UI | Complete |
 | M2 | Go command gate: `go get/install/mod/env/run`, exact versions, GOSUMDB | Complete |
 | M3 | Manifest engine: semantic `go.mod`/`go.sum` state, snapshots, vendor detection and drift | Complete |
-| M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | **Next** |
+| M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | **Partial** — justification enforced; cooldown and overrides remain |
 | M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | Not started |
 | M6 | Vulnerability metadata: OSV, provider abstraction | Not started |
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Not started |
@@ -52,6 +52,7 @@ src/core/config.ts        path resolution and tighten-only layering (SPEC §8)
 src/core/state.ts         remembered state, incl. ask-once project decisions
 src/core/audit.ts         JSONL audit log and redaction (SPEC §18)
 src/core/approval.ts      the human gate; the only producer of a grant
+src/core/justification.ts the agent's rationale (SPEC 11.2); one-shot, in-memory
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
 src/generic/shell.ts      shell parser shared by command analysis
@@ -88,6 +89,17 @@ src/generic/shell.ts      shell parser shared by command analysis
   is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
 
 ## What M4 needs
+
+Question 1 below is **answered and built**: SupplyGuard registers
+`supplyguard_justify_dependency`, an LLM-callable tool the agent must call
+before any dependency operation. `src/core/justification.ts` holds the store and
+the untrusted-argument parsing; the engine turns a missing justification into a
+DENY that names the tool. See `docs/KNOWN-GAPS.md` §2.6 for why it denies rather
+than asking with blank fields.
+
+What remains of M4 is release cooldown (question 2, still open) and scoped
+one-shot overrides (SPEC §17.2), which are coupled: the paranoid override that
+needs a human-entered reason exists to relax a release-age denial.
 
 `docs/SPEC.md` §11 and §17 are the specification. The pieces that already exist:
 

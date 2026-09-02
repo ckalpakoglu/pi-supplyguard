@@ -67,6 +67,8 @@ interface Harness {
   /** Run one bash tool call; returns the block result, if any. */
   call(command: string): Promise<{ block?: boolean; reason?: string } | undefined>;
   write(path: string, content: string): Promise<void>;
+  /** Record the agent-side justification SPEC 11.2 requires. */
+  justify(module: string, version: string): Promise<void>;
 }
 
 const BASE_GO_MOD = `module example.com/app
@@ -102,6 +104,19 @@ async function harness(
     call: (command) =>
       runtime.onToolCall({ toolName: "bash", toolCallId: "1", input: { command } }, ctx),
     write: (path, content) => writeFile(join(repo, path), content),
+    justify: async (module, version) => {
+      const result = await runtime.justifyTool(
+        {
+          module,
+          version,
+          purpose: "needed for the feature under test",
+          stdlibConsidered: true,
+          stdlibInsufficientReason: "the standard library has no equivalent",
+        },
+        ctx,
+      );
+      assert.notEqual(result.isError, true, JSON.stringify(result.content));
+    },
   };
 }
 
@@ -118,6 +133,14 @@ test("a dependency added with sed is caught on the next tool call", async () => 
 
   await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v9.9.9"));
 
+  // An unjustified dependency never reaches a human at all (SPEC 11.2).
+  const unjustified = await h.call("ls");
+  assert.equal(unjustified?.block, true);
+  assert.match(unjustified?.reason ?? "", /supplyguard_justify_dependency/);
+  assert.deepEqual(h.rec.prompts, [], "nothing to ask about yet");
+
+  // Justified, it becomes a trust decision a human can refuse.
+  await h.justify("github.com/foo/bar", "v9.9.9");
   const blocked = await h.call("ls");
   assert.equal(blocked?.block, true);
   assert.match(blocked?.reason ?? "", /Not approved by a human/);
@@ -126,6 +149,7 @@ test("a dependency added with sed is caught on the next tool call", async () => 
     /DependencyUpgrade github\.com\/foo\/bar@v9\.9\.9/,
     "the human is shown what actually changed",
   );
+  assert.match(h.rec.prompts.join("\n"), /Purpose\s+needed for the feature under test/);
 });
 
 test("a dependency added by a generated python script is caught the same way", async () => {
@@ -137,6 +161,10 @@ test("a dependency added by a generated python script is caught the same way", a
 
   const blocked = await h.call("go build ./...");
   assert.equal(blocked?.block, true);
+  assert.match(blocked?.reason ?? "", /supplyguard_justify_dependency/);
+
+  await h.justify("github.com/evil/pkg", "v0.0.1");
+  assert.equal((await h.call("go build ./..."))?.block, true, "the human still says no");
   assert.match(h.rec.prompts.join("\n"), /DependencyAdd github\.com\/evil\/pkg@v0\.0\.1/);
 });
 
@@ -146,6 +174,7 @@ test("a human can approve an out-of-band change once, and it is not re-asked", a
   await h.call("ls");
 
   await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v1.3.0"));
+  await h.justify("github.com/foo/bar", "v1.3.0");
 
   assert.equal(await h.call("ls"), undefined, "approved once");
   const promptsAfterApproval = h.rec.prompts.length;
@@ -161,6 +190,7 @@ test("a denied mutation keeps being denied until the file is put back", async ()
   await h.call("ls");
 
   await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v9.9.9"));
+  await h.justify("github.com/foo/bar", "v9.9.9");
   assert.equal((await h.call("ls"))?.block, true);
   assert.equal((await h.call("ls"))?.block, true, "the rejected state is not adopted");
 
@@ -174,6 +204,7 @@ test("an approved go get is not re-gated for the go.mod line it wrote", async ()
   const h = await harness({ answer: "Approve once" });
   await h.write("go.mod", BASE_GO_MOD);
 
+  await h.justify("github.com/foo/bar", "v1.4.0");
   assert.equal(await h.call("go get github.com/foo/bar@v1.4.0"), undefined);
   const promptsAfterGet = h.rec.prompts.length;
   assert.equal(promptsAfterGet, 1, "one approval for the dependency itself");
@@ -191,11 +222,13 @@ test("the expectation from an approved operation does not carry past one call", 
   const h = await harness({ answer: "Approve once" });
   await h.write("go.mod", BASE_GO_MOD);
 
+  await h.justify("github.com/foo/bar", "v1.4.0");
   await h.call("go get github.com/foo/bar@v1.4.0");
   await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v1.4.0"));
   await h.call("ls"); // reconciles the approved change
 
   await h.write("go.mod", `${BASE_GO_MOD.replace("v1.2.3", "v1.4.0")}\nrequire github.com/evil/pkg v0.0.1\n`);
+  await h.justify("github.com/evil/pkg", "v0.0.1");
   const prompts = h.rec.prompts.length;
   await h.call("ls");
   assert.equal(h.rec.prompts.length, prompts + 1, "the later edit is gated on its own");
@@ -208,6 +241,9 @@ test("a headless session blocks an out-of-band manifest change", async () => {
   await h.call("ls");
 
   await h.write("go.mod", `${BASE_GO_MOD}\nrequire github.com/evil/pkg v0.0.1\n`);
+  // Justified but headless: recording a rationale is not approval, and there is
+  // no human to give one (SPEC 17.1).
+  await h.justify("github.com/evil/pkg", "v0.0.1");
   const blocked = await h.call("ls");
   assert.equal(blocked?.block, true);
   assert.match(blocked?.reason ?? "", /Not approved by a human/);

@@ -52,8 +52,9 @@ control that overstates its coverage is worse than none. This section
 describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
 config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
-complete. Everything in [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet
-implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
+complete, and M4 is partially done — dependency justification is enforced,
+release cooldown and scoped overrides are not. Everything in
+[`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
 
@@ -91,6 +92,15 @@ Enforced now:
   `standard`, deny in `hardened`/`paranoid`). `paranoid` enforces vendoring
   without asking and denies dependency mutation in a project that has no vendor
   tree.
+- **Dependency justification:** SupplyGuard registers an LLM-callable tool,
+  `supplyguard_justify_dependency`. Before adding, upgrading or executing a
+  third-party dependency the agent must record the exact module and version,
+  what it is for, whether the standard library was considered and why it is
+  insufficient (SPEC §11.2). An operation with no matching justification is
+  denied and told to call the tool; a justified one is put to a human with the
+  rationale shown next to the change. Recording a justification is **not**
+  approval — it is evidence at the gate, and it covers one module at one
+  version for one run.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -100,8 +110,10 @@ Enforced now:
 
 Not yet implemented (planned milestones M4–M9):
 
-- dependency justification, scoped one-shot overrides, release-age cooldown
-  (M4) — `releaseAge.minimumDays` is parsed but not yet consumed;
+- release-age cooldown and scoped one-shot overrides (M4) —
+  `releaseAge.minimumDays` is parsed but not yet consumed, so the approval
+  object carries the agent's rationale but not the release age, vulnerability
+  or similarity findings SPEC §11.2 also lists;
 - typosquatting / repository-squatting analysis with a trust corpus (M5);
 - vulnerability metadata, e.g. OSV (M6);
 - Socket scans and Socket Firewall (M7);
@@ -165,6 +177,7 @@ land):
 |---|---|---|---|
 | Unversioned / `@latest` / floating Go dependency or tool op | Deny | Deny | Deny |
 | Exact-version dependency add/upgrade/replace, tool install, third-party execution | Ask | Ask | Ask |
+| The same, with no recorded justification | Deny | Deny | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
@@ -208,7 +221,16 @@ audit:
   enabled: true
 ```
 
-## Commands
+## Tools and commands
+
+The extension registers one LLM-callable tool:
+
+- `supplyguard_justify_dependency` — the agent records why a dependency is
+  needed (module, exact version, purpose, whether stdlib was considered and why
+  it is insufficient) before the operation that takes it on. Unjustified
+  dependency operations are denied.
+
+and two commands:
 
 - `/supplyguard-status` — show the effective profile, configuration sources
   and their statuses, registered ecosystem adapters, the cooldown setting, the

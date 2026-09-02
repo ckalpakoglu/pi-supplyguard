@@ -26,11 +26,13 @@ import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import type {
+  AgentToolResult,
   CommandDefinition,
   ExtensionAPI,
   ExtensionContext,
   ToolCallEvent,
   ToolCallEventResult,
+  ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 
 import { createGoAdapter } from "./adapters/go/index.ts";
@@ -57,6 +59,13 @@ import {
   type ResolvedProjectDecision,
 } from "./core/engine.ts";
 import type { NormalizedToolCall } from "./core/events.ts";
+import {
+  createJustificationStore,
+  JUSTIFY_TOOL,
+  JUSTIFY_TOOL_PARAMETERS,
+  parseJustification,
+  type JustificationStore,
+} from "./core/justification.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
@@ -88,6 +97,8 @@ export interface SupplyGuardRuntime {
   ): Promise<ToolCallEventResult | undefined>;
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
+  /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
+  justifyTool(params: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
   /** Session-scoped tightening floor; never persisted, never lowered. */
   sessionProfileFloor(): Profile | undefined;
   registry(): AdapterRegistry;
@@ -118,6 +129,8 @@ interface RepoSession {
   readonly asked: Set<string>;
   /** Answers read from durable state, cached so every call does not re-read it. */
   stored?: Readonly<Record<string, string>>;
+  /** Pending dependency justifications (SPEC 11.2); in-memory, one-shot. */
+  readonly justifications: JustificationStore;
 }
 
 /**
@@ -193,7 +206,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   function repoSession(repoRoot: string): RepoSession {
     const existing = sessions.get(repoRoot);
     if (existing !== undefined) return existing;
-    const created: RepoSession = { expectManifestChange: false, asked: new Set() };
+    const created: RepoSession = {
+      expectManifestChange: false,
+      asked: new Set(),
+      justifications: createJustificationStore(),
+    };
     sessions.set(repoRoot, created);
     return created;
   }
@@ -407,6 +424,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       auditEnabled: project.loaded.config.auditEnabled,
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
+      justifications: session.justifications,
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
@@ -477,6 +495,60 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           reason: `SupplyGuard: internal error (${message}); failing closed.`,
         };
       }
+    },
+
+    /**
+     * Record the agent's rationale for a dependency it is about to take on.
+     *
+     * SECURITY: recording a justification grants nothing. It is evidence the
+     * human reads at the gate, and its absence is what turns a dependency
+     * operation into a DENY (SPEC 11.2). The agent still cannot approve its own
+     * trust decision (SPEC 17.1).
+     */
+    async justifyTool(params, ctx) {
+      const project = await projectContext(ctx.cwd);
+      const at = now().toISOString();
+      const parsed = parseJustification(params, at);
+
+      if (!parsed.ok) {
+        return {
+          content: [{ type: "text", text: parsed.message }],
+          isError: true,
+        };
+      }
+
+      const justification = parsed.justification;
+      repoSession(project.repoRoot).justifications.record(justification);
+
+      await writeAudit(project, {
+        timestamp: at,
+        kind: "justification",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: !ctx.hasUI,
+        artifact: justification.artifact,
+        version: justification.version,
+        message: `dependency justification recorded: ${justification.purpose}`,
+        notes: [
+          `stdlibConsidered=${justification.stdlibConsidered}`,
+          `stdlibInsufficientReason=${justification.stdlibInsufficientReason}`,
+        ],
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `Recorded a justification for ${justification.artifact}@${justification.version}. ` +
+              `Run the dependency operation now: it will be put to a human for approval, ` +
+              `and the justification is consumed by that one operation. A different ` +
+              `version needs its own justification.`,
+          },
+        ],
+      };
     },
 
     async statusCommand(_args, ctx) {
@@ -639,4 +711,26 @@ export default function supplyguard(pi: ExtensionAPI): void {
 
   pi.registerCommand(STATUS_COMMAND, status);
   pi.registerCommand(PROFILE_COMMAND, profile);
+
+  const justify: ToolDefinition = {
+    name: JUSTIFY_TOOL,
+    label: "SupplyGuard justify dependency",
+    description:
+      "Record why a third-party dependency is needed, before adding, upgrading or " +
+      "executing it. SupplyGuard denies dependency operations that have no recorded " +
+      "justification for the exact module and version. Recording a justification is " +
+      "not approval: a human still decides.",
+    promptSnippet:
+      `${JUSTIFY_TOOL} — state why a dependency is needed before adding or upgrading it`,
+    promptGuidelines: [
+      `Before any command that adds, upgrades or executes a third-party dependency, call ` +
+        `${JUSTIFY_TOOL} with the exact module and version, what it is for, and why the ` +
+        `standard library is insufficient. SupplyGuard denies unjustified dependency ` +
+        `operations, and each justification covers one module at one version for one run.`,
+    ],
+    parameters: JUSTIFY_TOOL_PARAMETERS,
+    execute: (_toolCallId, params, _signal, _onUpdate, ctx) => runtime.justifyTool(params, ctx),
+  };
+
+  pi.registerTool(justify);
 }
