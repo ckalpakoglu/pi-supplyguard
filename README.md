@@ -53,7 +53,8 @@ describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
 config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
 complete, as are M4 (dependency justification, release cooldown, scoped
-one-shot overrides) and M8 (generic policies). Everything in
+one-shot overrides), M5 (identity protection) and M8 (generic policies).
+Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -124,6 +125,15 @@ Enforced now:
   40-character commit SHA counts as pinned. Workflow files are part of the
   manifest snapshot set, so a workflow rewritten by a script is caught the same
   way `go.mod` is.
+- **Typo- and repository-squatting:** module identities are compared against a
+  user-controlled corpus of *protected identities* — component by component
+  (host / owner / repository), with a Damerau-Levenshtein distance that counts
+  an adjacent transposition as one edit. The protected repository name under a
+  different owner (`random-owner/uuid` for `google/uuid`) is a signal of its
+  own, precisely because its edit distance is large. The profile widens the net
+  (0.08 / 0.15 / 0.25); a match asks in `standard` and is denied with an
+  override above it. **The corpus is not an allow-list**, and with no corpus the
+  analysis is disabled rather than guessed — `paranoid` says so in the prompt.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -135,7 +145,6 @@ Not yet implemented (planned milestones M4–M9):
 
 - vulnerability, similarity and transitive-impact findings in the approval
   object (M5, M6);
-- typosquatting / repository-squatting analysis with a trust corpus (M5);
 - vulnerability metadata, e.g. OSV (M6);
 - Socket scans and Socket Firewall (M7);
 - adversarial hardening against bypasses such as hostile co-installed
@@ -201,6 +210,7 @@ land):
 | Release date unavailable (proxy unreachable) | Warn | Warn | Deny, no override |
 | `curl \| sh` / `wget \| bash` installer pipeline | Deny | Deny | Deny |
 | Newly introduced mutable GitHub Actions reference | Ask | Deny | Deny |
+| Resembles a protected identity / repository squat | Ask | Deny + override | Deny + override with a written reason |
 | Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
@@ -216,8 +226,8 @@ land):
 ```text
 Global policy            ~/.config/pi-supplyguard/config.yaml
 Project policy           <repo>/.supplyguard.yaml
-Global trust corpus      ~/.config/pi-supplyguard/trust.yaml        (M5)
-Project trust corpus     <repo>/.supplyguard-trust.yaml            (M5)
+Global trust corpus      ~/.config/pi-supplyguard/trust.yaml
+Project trust corpus     <repo>/.supplyguard-trust.yaml
 Remembered state         ~/.local/state/pi-supplyguard/state.json
 Audit log                ~/.local/state/pi-supplyguard/audit.jsonl
 ```

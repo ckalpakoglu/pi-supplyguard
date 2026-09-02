@@ -76,6 +76,7 @@ import {
   PROFILES,
   type Profile,
 } from "./core/profiles.ts";
+import { countIdentities, loadTrustCorpus, type TrustCorpus } from "./core/trust.ts";
 import {
   getProjectDecisions,
   loadState,
@@ -120,6 +121,8 @@ interface ProjectContext {
   readonly loaded: LoadedConfig;
   readonly loadedAt: number;
   readonly branch?: string;
+  /** Protected identities, loaded on the same TTL as configuration (SPEC 12). */
+  readonly trust: TrustCorpus;
 }
 
 /**
@@ -241,11 +244,13 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     const paths = resolvePaths(repoRoot, options.env ?? process.env, options.home);
     const loaded = await loadConfig({ repoRoot, paths });
     const branch = await detectGitBranch(repoRoot);
+    const trust = await loadTrustCorpus([paths.globalTrust, paths.projectTrust]);
 
     const context: ProjectContext = {
       repoRoot,
       paths,
       loaded,
+      trust,
       loadedAt: at,
       ...(branch === undefined ? {} : { branch }),
     };
@@ -280,15 +285,14 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     project: ProjectContext,
     ctx: ExtensionContext,
   ): Promise<void> {
-    if (project.loaded.warnings.length === 0) return;
+    const warnings = [...project.loaded.warnings, ...project.trust.warnings];
+    if (warnings.length === 0) return;
     if (configWarningsAnnounced.has(project.repoRoot)) return;
     configWarningsAnnounced.add(project.repoRoot);
 
     notify(
       ctx,
-      `SupplyGuard configuration notices:\n${project.loaded.warnings
-        .map((w) => `- ${w}`)
-        .join("\n")}`,
+      `SupplyGuard configuration notices:\n${warnings.map((w) => `- ${w}`).join("\n")}`,
       "warning",
     );
 
@@ -300,7 +304,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       cwd: project.repoRoot,
       headless: !ctx.hasUI,
       message: "configuration layer notices",
-      notes: project.loaded.warnings,
+      notes: warnings,
       ...(project.branch === undefined ? {} : { branch: project.branch }),
     });
   }
@@ -440,6 +444,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       resolveProjectDecision: projectDecisionResolver(project, ctx),
       justifications: session.justifications,
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
+      trust: project.trust,
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
@@ -610,6 +615,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           registry.size() === 0 ? " (none)" : ` (${adapters})`
         }`,
         `  Release cooldown     ${config.releaseAgeMinimumDays} days`,
+        `  Trust corpus         ${
+          project.trust.empty
+            ? "none — typo/repository-squatting analysis is DISABLED"
+            : `${countIdentities(project.trust)} identities (${project.trust.sources.join(", ")})`
+        }`,
         `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
         `  Manifest baseline    ${
           session.baseline === undefined
@@ -630,8 +640,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Session              ${ctx.hasUI ? "interactive" : "headless"} (${ctx.mode})`,
         `  Enforcement          Go command gate (M2), manifest reconciliation and`,
         `                       vendor state (M3), dependency justification and`,
-        `                       release cooldown (M4) active. Identity,`,
-        `                       vulnerability and Socket checks arrive in M5-M7.`,
+        `                       release cooldown (M4), identity protection (M5)`,
+        `                       and generic policies (M8) active. Vulnerability`,
+        `                       and Socket checks arrive in M6-M7.`,
       ];
 
       if (project.loaded.warnings.length > 0) {

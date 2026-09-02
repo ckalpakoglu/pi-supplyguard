@@ -1,6 +1,6 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M4 and M8 complete. M5, M6, M7 and M9 not started.
+**Status:** M1–M5 and M8 complete. M6, M7 and M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -99,14 +99,37 @@ Workflow files now join the manifest snapshot set (SPEC §14.1), through a
 deliberately small glob: one `*` in the final path segment, which covers
 `.github/workflows/*.yml` and nothing more ambitious.
 
-### 1.4 Whole subsystems are absent, not partial
+### 1.4 Identity analysis protects only what the corpus names
+
+Typo- and repository-squatting analysis (SPEC §12) is enforced, and its limits
+are structural rather than temporary:
+
+- **With no corpus it does nothing.** SPEC §12.6 requires exactly that: the tool
+  has no way to know which `foo/bar` is the real one, and a version that guessed
+  would produce confident nonsense about ownership. Paranoid says so in the
+  approval prompt; no profile denies for the absence alone.
+- **The corpus is not an allow-list.** A module that is absent is not
+  "untrusted"; it is simply not something a typo could be aimed at. An attacker
+  registering a name that resembles nothing protected is invisible to this
+  check, and always will be.
+- **The thresholds are the SPEC's own starting points** (0.08 / 0.15 / 0.25) and
+  it says they "must be calibrated against true-positive and false-positive
+  corpora before stable release". `test/core/identity.test.ts` carries a
+  negative corpus of real, unrelated modules; it is small.
+- **The variant is restricted Damerau-Levenshtein** (optimal string alignment):
+  adjacent transpositions cost one edit, a transposed pair edited again does
+  not. That is the typo people actually make, and the unrestricted algorithm
+  costs more for cases nobody types.
+- **No Unicode or homoglyph normalization.** SPEC §12.3 lists it as optional
+  future work, and a Cyrillic `о` in a module path would pass this check today.
+
+### 1.5 Whole subsystems are absent, not partial
 
 None of the following exist in any form. A clean SupplyGuard result today says
 nothing about any of them:
 
 | Capability | Milestone |
 |---|---|
-| Trust corpus, typosquatting, repository-squatting | M5 |
 | Vulnerability data (OSV) | M6 |
 | Socket artifact/manifest scans, Firewall, provider health | M7 |
 
@@ -115,7 +138,7 @@ similarity findings and transitive impact alongside the purpose, stdlib and
 release-age fields; the first three arrive with M5 and M6. The approval prompt
 shows what it has and does not pretend the rest was checked.
 
-### 1.5 The release-age lookup is a network request, with everything that implies
+### 1.6 The release-age lookup is a network request, with everything that implies
 
 Release cooldown (SPEC §11.1) needs a publication date, and for Go that means
 asking the module proxy — the only outbound request SupplyGuard makes.
@@ -135,7 +158,7 @@ asking the module proxy — the only outbound request SupplyGuard makes.
   suite is verified to make zero network calls, and every proxy behaviour is
   covered with an injected `fetch`.
 
-### 1.6 The Go vendor model is narrower than SPEC §9.3 describes
+### 1.7 The Go vendor model is narrower than SPEC §9.3 describes
 
 Vendor drift is enforced (SPEC §9.4), the ask-once vendor question is asked and
 persisted (SPEC §9.2), and Paranoid denies a dependency mutation in a project
@@ -164,7 +187,7 @@ longer requires only when the tree marks it `## explicit`. A non-explicit
 leftover is not reported. Editing `vendor/modules.txt` is itself gated, so this
 is bounded, but it is not the same test `go build -mod=vendor` runs.
 
-### 1.7 Non-`go.mod` manifests are classified coarsely
+### 1.8 Non-`go.mod` manifests are classified coarsely
 
 `go.mod` gets a full semantic diff (add / upgrade / downgrade / remove /
 replace / exclude). `go.sum`, `go.work`, `go.work.sum` and `vendor/modules.txt`
@@ -183,7 +206,7 @@ build compiles from `vendor/`, and editing a vendored `.go` file changes nothing
 SupplyGuard watches. Hashing a whole vendor tree on every tool call is not the
 answer; noticing it is M9's problem.
 
-### 1.8 `go generate` is treated as merely capable
+### 1.9 `go generate` is treated as merely capable
 
 ```text
 go generate ./...  ->  THIRD_PARTY_CAPABLE
@@ -198,7 +221,7 @@ warn across the profiles.
 `CAPABLE_SUBCOMMANDS`; the reason it has not been made is that no one has
 assessed the false-positive cost on repositories that generate routinely.
 
-### 1.9 A hostile co-installed extension can rewrite an approved command
+### 1.10 A hostile co-installed extension can rewrite an approved command
 
 The Pi host allows a `tool_call` handler to mutate `event.input`, and does not
 re-validate it afterwards. An extension registered after SupplyGuard could
@@ -209,7 +232,7 @@ cannot defend against a later handler that does.
 
 **Closed by:** M9, to the extent it can be. Documented in `src/index.ts`.
 
-### 1.10 The host API surface is hand-written and only spot-verified
+### 1.11 The host API surface is hand-written and only spot-verified
 
 `@earendil-works/pi-coding-agent` is an optional peerDependency and is
 deliberately **not installed**: pulling ~136 transitive packages into a
@@ -235,7 +258,7 @@ Consequences that stand:
 **Mitigation:** compatibility testing against a pinned host before publication.
 The peerDependency range is still `*` pending that work.
 
-### 1.11 A non-numeric wrapper flag value degrades to unknown risk
+### 1.12 A non-numeric wrapper flag value degrades to unknown risk
 
 ```text
 sudo -u root go get foo@latest  ->  UNKNOWN_RISK   (not a precise DENY)
@@ -251,7 +274,7 @@ The result is conservative and correct — standard/hardened ask, paranoid denie
 — but it is less precise than the `DENY` the same operation earns unwrapped.
 Running `go` as another user is arguably worth flagging in its own right.
 
-### 1.12 Configuration changes take up to 5 seconds to apply
+### 1.13 Configuration changes take up to 5 seconds to apply
 
 `.supplyguard.yaml` is re-read when the cached copy is older than
 `CONFIG_TTL_MS` (5s). Staleness is bounded and can only ever withhold a
@@ -411,7 +434,7 @@ through"*; mutation-checked.
 
 Adding or tightening `.supplyguard.yaml` had no effect until Pi restarted. Not
 exploitable — layers may only tighten — but surprising. Fixed with a 5s TTL
-(§1.12).
+(§1.13).
 Pinned by *"a project configuration added mid-session is picked up once the
 cache expires"*; mutation-checked.
 
@@ -526,7 +549,7 @@ mutation-checked.
   (added by this branch) and `license: Apache-2.0` is backed by the `LICENSE`
   file.
 - `peerDependencies` pins `@earendil-works/pi-coding-agent` at `*`, deliberately
-  deferred until compatibility testing (§1.10).
+  deferred until compatibility testing (§1.11).
 
 Publishing is a human-approved operation (`AGENTS.md`) and none of this blocks
 development, but the peer range still needs compatibility work before release.
@@ -539,5 +562,5 @@ development, but the peer range still needs compatibility work before release.
 - A defect gets an entry naming the test that pins it. No entry without a test.
 - When a milestone closes a gap, delete the entry — do not mark it "done". This
   file describes the present, not the history of intentions.
-- `grep -rn "ponytail:" src/` lists the deliberate shortcuts in code; §1.12 is
+- `grep -rn "ponytail:" src/` lists the deliberate shortcuts in code; §1.13 is
   the current one.

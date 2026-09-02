@@ -33,8 +33,8 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M2 | Go command gate: `go get/install/mod/env/run`, exact versions, GOSUMDB | Complete |
 | M3 | Manifest engine: semantic `go.mod`/`go.sum` state, snapshots, vendor detection and drift | Complete |
 | M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | Complete |
-| M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | **Next** |
-| M6 | Vulnerability metadata: OSV, provider abstraction | Not started |
+| M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | Complete |
+| M6 | Vulnerability metadata: OSV, provider abstraction | **Next** |
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Not started |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
 | M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Not started |
@@ -54,6 +54,8 @@ src/core/audit.ts         JSONL audit log and redaction (SPEC §18)
 src/core/approval.ts      the human gate; the only producer of a grant
 src/core/justification.ts the agent's rationale (SPEC 11.2); one-shot, in-memory
 src/core/release-age.ts   the cooldown policy; the date comes from an adapter
+src/core/trust.ts         the protected identity corpus; NOT an allow-list
+src/analyzers/            similarity and component-aware identity analysis
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
 src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
@@ -91,28 +93,21 @@ src/generic/shell.ts      shell parser shared by command analysis
 - **The Pi host package is deliberately not installed.** `types/pi-coding-agent.d.ts`
   is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
 
-## What M5 needs
+## What M6 needs
 
-`docs/SPEC.md` §12 is the specification, and it is unusually prescriptive:
-component-aware normalization (host / owner / repo / subpath), Damerau-Levenshtein
-implemented internally, normalized distance for long identifiers and absolute
-distance for short ones, and the repo-squat signal (a protected repository name
-under a different owner) as a check in its own right.
+`docs/SPEC.md` §16 is short and the shape is already in place: `EngineContext`
+takes an `externalEvidence` provider whose findings can only tighten
+(`withExternalEvidence`), and M4 established both the "adapter answers a
+question about an artifact" hook and the network posture that goes with it.
 
-Two things to hold on to:
-
-- **The trust corpus is not an allow-list.** It is a list of identities worth
-  protecting. A module that is not in it is not "untrusted"; it is simply not
-  something a typo could be aimed at. With no corpus, similarity analysis is
-  DISABLED rather than guessed, paranoid says so prominently, and no operation
-  is denied for the absence alone (SPEC §12.6).
-- **The thresholds are guesses.** 0.08 / 0.15 / 0.25 are the SPEC's own starting
-  points and it says so: they "must be calibrated against true-positive and
-  false-positive corpora before stable release". The test corpus is the
-  deliverable as much as the algorithm is.
-
-`resolvePaths` already returns `globalTrust` and `projectTrust` paths, and
-nothing reads them yet.
+OSV (`https://api.osv.dev/v1/query`) takes an ecosystem, a package name and a
+version and needs no credentials. The questions M6 has to answer are the ones
+M4 answered for the proxy, repeated: which modules must never be sent (the same
+`GOPRIVATE` rule), what an unavailable provider means per profile (SPEC §16:
+"unknown is never silently equivalent to clean in Paranoid"), and whether a
+finding is overridable — a known CRITICAL vulnerability should not be, and
+SPEC §4.4 says High is "Deny / override" in hardened and "Deny / exceptional
+override" in paranoid.
 
 ## Verification
 

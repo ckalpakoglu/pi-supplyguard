@@ -70,6 +70,8 @@ import {
 } from "./justification.ts";
 import { baselineForClassification, baselineForEvent, type Profile } from "./profiles.ts";
 import { assessReleaseAge } from "./release-age.ts";
+import { similarityThreshold, type TrustCorpus } from "./trust.ts";
+import { compareToProtected, compareToProtectedOwners } from "../analyzers/repository.ts";
 import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/registry.ts";
 
 /**
@@ -147,6 +149,14 @@ export interface EngineContext {
    * pre-M4 pipeline; the wiring layer always supplies the configured value.
    */
   readonly releaseAgeMinimumDays?: number;
+  /**
+   * Protected identities for typo- and repository-squatting analysis (SPEC 12).
+   *
+   * Absent or empty disables the analysis rather than guessing: SupplyGuard has
+   * no way to know which `foo/bar` is the real one, and a tool that invented
+   * ownership would produce confident nonsense.
+   */
+  readonly trust?: TrustCorpus;
 }
 
 export interface EngineOutcome {
@@ -183,7 +193,87 @@ export interface EngineOutcome {
 /** Finding code marking a denial whose override needs a written reason. */
 const RELEASE_AGE_REASON_REQUIRED = "release-age-exceptional";
 
-const REASON_REQUIRED_CODES: ReadonlySet<string> = new Set([RELEASE_AGE_REASON_REQUIRED]);
+/** Identity findings are exceptional overrides too: they name a likely attack. */
+const IDENTITY_REASON_REQUIRED = "identity-exceptional";
+
+const REASON_REQUIRED_CODES: ReadonlySet<string> = new Set([
+  RELEASE_AGE_REASON_REQUIRED,
+  IDENTITY_REASON_REQUIRED,
+]);
+
+/**
+ * Compare an artifact against the protected identity corpus (SPEC 12).
+ *
+ * The PROFILE decides how wide the net is (SPEC 12.4's thresholds); what
+ * happens to a catch does not vary: standard asks, hardened and paranoid deny
+ * with a scoped override, and paranoid demands a written reason. A lexical
+ * near-miss on a protected identity is the typosquatting attack itself, not a
+ * matter of taste.
+ */
+function identityFindings(
+  events: readonly SupplyChainEvent[],
+  trust: TrustCorpus | undefined,
+  profile: Profile,
+): LocalFinding[] {
+  if (trust === undefined || trust.empty) {
+    // SPEC 12.6: a missing corpus never denies, but Paranoid must not let a
+    // clean result be read as "the name was checked". A `warn` finding says so
+    // in the prompt the human actually reads, which a note in the audit record
+    // would not; it cannot change the decision.
+    if (profile !== "paranoid" || !events.some((event) => event.artifact !== undefined)) {
+      return [];
+    }
+    return [
+      localFinding(
+        "identity",
+        "no-trust-corpus",
+        "warn",
+        "No protected identity corpus is configured, so typo- and repository-squatting " +
+          "analysis is DISABLED. A clean SupplyGuard result says nothing about whether this " +
+          "module name impersonates another.",
+      ),
+    ];
+  }
+
+  const threshold = similarityThreshold(profile);
+  const findings: LocalFinding[] = [];
+  const seen = new Set<string>();
+
+  for (const event of events) {
+    const artifact = event.artifact;
+    if (artifact === undefined || seen.has(artifact)) continue;
+    seen.add(artifact);
+
+    const corpus = trust.ecosystems[event.ecosystem];
+    if (corpus === undefined) continue;
+
+    // An artifact that IS a protected identity is the real thing.
+    if (corpus.modules.some((entry) => entry.module === artifact)) continue;
+
+    const hit =
+      corpus.modules
+        .map((entry) => compareToProtected(artifact, entry, threshold))
+        .find((result) => result !== undefined) ??
+      compareToProtectedOwners(artifact, corpus.owners, threshold);
+
+    if (hit === undefined) continue;
+
+    const decision: Decision = profile === "standard" ? "ask" : "deny";
+    findings.push(
+      localFinding(
+        "identity",
+        profile === "paranoid" ? IDENTITY_REASON_REQUIRED : `identity:${hit.signal}`,
+        decision,
+        `${hit.message} This is the shape of a ${
+          hit.signal === "repository-squat" ? "repository-squatting" : "typosquatting"
+        } attack; confirm the module path character by character before allowing it.`,
+        { overridable: decision === "deny" },
+      ),
+    );
+  }
+
+  return findings;
+}
 
 function describeEvent(event: SupplyChainEvent): string {
   const artifact = event.artifact === undefined ? "" : ` ${event.artifact}`;
@@ -450,6 +540,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
 
   const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events];
 
+
   const justified = collectJustifications(events, ctx.justifications);
 
   // SPEC 11.1 -- release cooldown. Only artifacts already heading for a trust
@@ -492,6 +583,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     ...baselineFindings(classification, events, ctx.profile),
     ...justified.findings,
     ...cooldown,
+    ...identityFindings(events, ctx.trust, ctx.profile),
   ]);
 
   if (errors.length > 0) {

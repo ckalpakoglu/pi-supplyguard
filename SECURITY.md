@@ -7,8 +7,8 @@
 M2 (Go command gate) and M3 (manifest engine: snapshots, semantic `go.mod`
 state, vendor detection and drift) and M4 (dependency justification, release
 cooldown, scoped one-shot overrides) and M8 (generic policies: installer
-pipelines, GitHub Actions pinning, network events) are complete. M5, M6, M7 and
-M9 are not implemented. See
+pipelines, GitHub Actions pinning, network events) and M5 (identity protection)
+are complete. M6, M7 and M9 are not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -79,8 +79,9 @@ Specific limits of the current implementation (details in
   `GONOPROXY` and `GOPROXY=off` are honored before a request is built, so a
   private module path is never sent to a public proxy — and its age is
   therefore never checked either.
-- No typosquatting or repository-squatting analysis, and no trust corpus
-  consumption (M5).
+- Identity analysis protects only the identities a corpus names, and does
+  nothing at all without one (SPEC §12.6). It has no Unicode or homoglyph
+  normalization, so a lookalike built from non-Latin characters passes.
 - No vulnerability intelligence such as OSV (M6).
 - No Socket scans, Socket Firewall or provider health checks (M7).
 - Generic policy stops where SPEC §15 stops: a download and its execution in
@@ -130,7 +131,7 @@ Trust boundaries:
 | Dependency justification required before a trust decision | **Enforced** (M4) |
 | Release cooldown, per profile, with a proxy-outage posture | **Enforced** (M4) |
 | Scoped one-shot overrides, reason-required in paranoid | **Enforced** (M4) |
-| Typosquatting / reposquatting / trust corpus | Not yet enforced (M5) |
+| Typosquatting / reposquatting against a trust corpus | **Enforced** (M5) |
 | Vulnerability metadata (OSV) | Not yet enforced (M6) |
 | Socket scans / Firewall / provider health | Not yet enforced (M7) |
 | `curl \| sh` / `wget \| sh` denial, in every profile | **Enforced** (M8) |
