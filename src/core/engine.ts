@@ -71,6 +71,7 @@ import {
 import { baselineForClassification, baselineForEvent, type Profile } from "./profiles.ts";
 import { assessReleaseAge } from "./release-age.ts";
 import { similarityThreshold, type TrustCorpus } from "./trust.ts";
+import { assessVulnerabilities } from "./vulnerability.ts";
 import { compareToProtected, compareToProtectedOwners } from "../analyzers/repository.ts";
 import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/registry.ts";
 
@@ -196,9 +197,12 @@ const RELEASE_AGE_REASON_REQUIRED = "release-age-exceptional";
 /** Identity findings are exceptional overrides too: they name a likely attack. */
 const IDENTITY_REASON_REQUIRED = "identity-exceptional";
 
+const VULNERABILITY_REASON_REQUIRED = "vulnerability-exceptional";
+
 const REASON_REQUIRED_CODES: ReadonlySet<string> = new Set([
   RELEASE_AGE_REASON_REQUIRED,
   IDENTITY_REASON_REQUIRED,
+  VULNERABILITY_REASON_REQUIRED,
 ]);
 
 /**
@@ -579,10 +583,46 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     }
   }
 
+  // SPEC 16 -- known vulnerabilities, for the same artifacts and on the same
+  // terms: only what is already heading for a trust decision is looked up.
+  const vulnerabilities: LocalFinding[] = [];
+  for (const event of events) {
+    if (!needsJustification(event)) continue;
+    const artifact = event.artifact ?? "";
+    const version = event.version ?? "";
+
+    const lookup = await ctx.registry.resolveVulnerabilities(artifact, version, adapterCtx);
+    if (lookup === undefined) continue;
+
+    const assessment = assessVulnerabilities(lookup, {
+      profile: ctx.profile,
+      artifact,
+      version,
+    });
+    if (assessment === undefined) continue;
+    if (assessment.decision === "allow") {
+      notes.push(assessment.message);
+      continue;
+    }
+
+    vulnerabilities.push(
+      localFinding(
+        "vulnerability",
+        assessment.reasonRequired
+          ? VULNERABILITY_REASON_REQUIRED
+          : `vulnerability:${assessment.worst ?? "unknown"}`,
+        assessment.decision,
+        assessment.message,
+        { overridable: assessment.overridable },
+      ),
+    );
+  }
+
   let evaluation = evaluateLocal([
     ...baselineFindings(classification, events, ctx.profile),
     ...justified.findings,
     ...cooldown,
+    ...vulnerabilities,
     ...identityFindings(events, ctx.trust, ctx.profile),
   ]);
 

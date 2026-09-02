@@ -53,8 +53,8 @@ describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
 config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
 complete, as are M4 (dependency justification, release cooldown, scoped
-one-shot overrides), M5 (identity protection) and M8 (generic policies).
-Everything in
+one-shot overrides), M5 (identity protection), M6 (vulnerability metadata) and
+M8 (generic policies). Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -134,6 +134,14 @@ Enforced now:
   (0.08 / 0.15 / 0.25); a match asks in `standard` and is denied with an
   override above it. **The corpus is not an allow-list**, and with no corpus the
   analysis is disabled rather than guessed — `paranoid` says so in the prompt.
+- **Known vulnerabilities:** every artifact heading for a trust decision is
+  checked against [OSV](https://osv.dev), which needs no account or token. A
+  **critical** advisory is denied in every profile and cannot be overridden; a
+  **high** one asks in `standard` and is denied with an override above it. An
+  advisory whose severity the database does not state is treated as unresolved,
+  not as mild — `paranoid` denies it (SPEC §16). Withdrawn advisories are
+  ignored. `GOPRIVATE` applies here exactly as it does to the proxy: a private
+  module name is never sent to a public database.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -145,7 +153,6 @@ Not yet implemented (planned milestones M4–M9):
 
 - vulnerability, similarity and transitive-impact findings in the approval
   object (M5, M6);
-- vulnerability metadata, e.g. OSV (M6);
 - Socket scans and Socket Firewall (M7);
 - adversarial hardening against bypasses such as hostile co-installed
   extensions (M9).
@@ -211,6 +218,9 @@ land):
 | `curl \| sh` / `wget \| bash` installer pipeline | Deny | Deny | Deny |
 | Newly introduced mutable GitHub Actions reference | Ask | Deny | Deny |
 | Resembles a protected identity / repository squat | Ask | Deny + override | Deny + override with a written reason |
+| Known **critical** vulnerability | Deny, no override | Deny, no override | Deny, no override |
+| Known **high** vulnerability | Ask | Deny + override | Deny + override with a written reason |
+| Advisory with no stated severity | Ask | Ask | Deny + override with a written reason |
 | Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |

@@ -372,6 +372,9 @@ async function runtimeWith(
     env: {},
     now: () => new Date("2026-09-02T00:00:00.000Z"),
     proxy: { env: {}, fetch: async () => ({ ok: true, status: 200, text: async () => body }) },
+    // These tests are about the cooldown; OSV is covered separately and no
+    // test may reach the network.
+    osv: { env: { GOPROXY: "off" } },
   });
 
   return {

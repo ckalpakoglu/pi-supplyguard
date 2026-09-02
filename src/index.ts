@@ -36,6 +36,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { createGoAdapter } from "./adapters/go/index.ts";
+import type { OsvOptions } from "./adapters/go/osv.ts";
 import type { ProxyOptions } from "./adapters/go/proxy.ts";
 import { createAdapterRegistry, type AdapterRegistry } from "./adapters/registry.ts";
 import { createGenericAdapter } from "./generic/index.ts";
@@ -99,6 +100,13 @@ export interface RuntimeOptions {
    * service which module names appear in this repository's fixtures.
    */
   readonly proxy?: ProxyOptions;
+  /**
+   * OSV access for vulnerability lookups (SPEC 16).
+   *
+   * Defaults to the proxy's environment, so `GOPROXY=off` disables both. Tests
+   * MUST disable it or inject `fetch`: the suite reaches no network.
+   */
+  readonly osv?: OsvOptions;
 }
 
 export interface SupplyGuardRuntime {
@@ -214,7 +222,13 @@ function notify(
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
   const registry =
     options.registry ??
-    createAdapterRegistry([createGenericAdapter(), createGoAdapter(options.proxy ?? {})]);
+    createAdapterRegistry([
+      createGenericAdapter(),
+      createGoAdapter(
+        options.proxy ?? {},
+        options.osv ?? { ...(options.proxy?.env === undefined ? {} : { env: options.proxy.env }) },
+      ),
+    ]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();
@@ -641,8 +655,8 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Enforcement          Go command gate (M2), manifest reconciliation and`,
         `                       vendor state (M3), dependency justification and`,
         `                       release cooldown (M4), identity protection (M5)`,
-        `                       and generic policies (M8) active. Vulnerability`,
-        `                       and Socket checks arrive in M6-M7.`,
+        `                       generic policies (M8) and OSV vulnerability data`,
+        `                       (M6) active. Socket checks arrive in M7.`,
       ];
 
       if (project.loaded.warnings.length > 0) {

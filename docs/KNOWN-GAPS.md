@@ -1,6 +1,6 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M5 and M8 complete. M6, M7 and M9 not started.
+**Status:** M1–M6 and M8 complete. M7 and M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -130,7 +130,6 @@ nothing about any of them:
 
 | Capability | Milestone |
 |---|---|
-| Vulnerability data (OSV) | M6 |
 | Socket artifact/manifest scans, Firewall, provider health | M7 |
 
 The approval object is still partial. SPEC §11.2 lists vulnerability findings,
@@ -138,25 +137,33 @@ similarity findings and transitive impact alongside the purpose, stdlib and
 release-age fields; the first three arrive with M5 and M6. The approval prompt
 shows what it has and does not pretend the rest was checked.
 
-### 1.6 The release-age lookup is a network request, with everything that implies
+### 1.6 The outbound lookups are network requests, with everything that implies
 
-Release cooldown (SPEC §11.1) needs a publication date, and for Go that means
-asking the module proxy — the only outbound request SupplyGuard makes.
+Release cooldown (SPEC §11.1) needs a publication date and vulnerability data
+(SPEC §16) needs an advisory database, so SupplyGuard makes two kinds of
+outbound request: the Go module proxy and OSV. Both follow the same rules.
 
-- **A public proxy learns which modules a repository takes on.** `GOPRIVATE` and
-  `GONOPROXY` are honored *before* a request is built, and `GOPROXY=off`/`direct`
-  disable lookups entirely. A module covered by any of those is reported as
-  "not applicable" and never queried — which also means its age is never
-  checked, in any profile.
-- **A proxy outage is not a bypass.** Standard and hardened warn; paranoid
-  denies and, per SPEC §17.3, does *not* offer a one-shot override for it. The
-  way out is to restore access or change the profile deliberately.
-- **The date is cached per process, never persisted**, and the cooldown is only
-  consulted for artifacts already heading for a human gate — a build command
-  costs no request.
-- The lookup has never been exercised against the live proxy in CI: the test
-  suite is verified to make zero network calls, and every proxy behaviour is
-  covered with an injected `fetch`.
+- **A public service learns which modules a repository takes on.** `GOPRIVATE`
+  and `GONOPROXY` are honored *before* a request is built, and
+  `GOPROXY=off`/`direct` disable both lookups entirely. A module covered by any
+  of those is reported as "not applicable" and never queried — which also means
+  its age and its advisories are never checked, in any profile.
+- **An outage is not a bypass.** Standard and hardened warn; paranoid denies
+  and, per SPEC §17.3, does *not* offer a one-shot override for it. The way out
+  is to restore access or change the profile deliberately.
+- **Answers are cached per process, never persisted**, and both lookups run only
+  for artifacts already heading for a human gate — a build command costs no
+  request. Advisories do change, unlike a publication date, so a long-running
+  session can hold a stale clean answer.
+- **Neither has been exercised against the live service in CI**: the test suite
+  is verified to make zero network calls, and every behaviour is covered with an
+  injected `fetch`. The OSV request shape is pinned by a test, not by a
+  contract test against osv.dev.
+- **Severity depends on what the database says.** OSV entries without a
+  `database_specific.severity` or a scored CVSS vector are `unknown`, which
+  paranoid denies and the other profiles ask about. No CVSS vector is *computed*
+  from its metrics: a vector with no attached score yields `unknown` rather than
+  a guess.
 
 ### 1.7 The Go vendor model is narrower than SPEC §9.3 describes
 

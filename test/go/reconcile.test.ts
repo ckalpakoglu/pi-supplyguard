@@ -16,7 +16,8 @@ import { createGoAdapter, VENDOR_MODE_DECISION, VENDOR_OPTIONAL } from "../../sr
 import type { SupplyChainEvent } from "../../src/core/events.ts";
 import type { FileMutation } from "../../src/core/manifest.ts";
 
-const adapter = createGoAdapter();
+// No test reaches the network.
+const adapter = createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } });
 
 const BASE = `module example.com/app
 

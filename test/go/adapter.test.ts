@@ -34,7 +34,8 @@ function harness(options: { profile?: Profile; hasUI?: boolean; answer?: string 
       sessionId: "session-1",
       profile: options.profile ?? "standard",
       hasUI,
-      registry: createAdapterRegistry([createGoAdapter()]),
+      // No test reaches the network: the proxy and OSV are both disabled.
+      registry: createAdapterRegistry([createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } })]),
       ui: {
         hasUI,
         select: async (title: string) => {
@@ -205,7 +206,7 @@ test("an adapter floor tightens a baseline but never loosens one", async () => {
 // The reason a command was unreadable used to be computed and thrown away, so
 // the audit record said UNKNOWN_RISK without saying what triggered it.
 test("an unreadable command carries its reason through to the caller", async () => {
-  const result = await createGoAdapter().inspectToolCall(
+  const result = await createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } }).inspectToolCall(
     { toolName: "bash", input: { command: "sudo -u root go get foo@latest" } },
     { repoRoot: "/repo", profile: "standard" },
   );
@@ -221,7 +222,7 @@ test("only manifest-writing go commands announce an expected manifest change", a
   const ctx = { repoRoot: "/repo", profile: "standard" as const };
   const expects = async (command: string) =>
     (
-      await createGoAdapter().inspectToolCall(
+      await createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } }).inspectToolCall(
         { toolName: "bash", input: { command } },
         ctx,
       )

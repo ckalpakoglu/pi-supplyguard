@@ -8,7 +8,7 @@ M2 (Go command gate) and M3 (manifest engine: snapshots, semantic `go.mod`
 state, vendor detection and drift) and M4 (dependency justification, release
 cooldown, scoped one-shot overrides) and M8 (generic policies: installer
 pipelines, GitHub Actions pinning, network events) and M5 (identity protection)
-are complete. M6, M7 and M9 are not implemented. See
+and M6 (vulnerability metadata) are complete. M7 and M9 are not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -82,7 +82,9 @@ Specific limits of the current implementation (details in
 - Identity analysis protects only the identities a corpus names, and does
   nothing at all without one (SPEC §12.6). It has no Unicode or homoglyph
   normalization, so a lookalike built from non-Latin characters passes.
-- No vulnerability intelligence such as OSV (M6).
+- Vulnerability data is only as good as OSV's coverage and as fresh as the
+  per-process cache, and an advisory with no stated severity is treated as
+  unresolved rather than assigned one.
 - No Socket scans, Socket Firewall or provider health checks (M7).
 - Generic policy stops where SPEC §15 stops: a download and its execution in
   two separate steps is a network event rather than a pipeline, container image
@@ -132,7 +134,7 @@ Trust boundaries:
 | Release cooldown, per profile, with a proxy-outage posture | **Enforced** (M4) |
 | Scoped one-shot overrides, reason-required in paranoid | **Enforced** (M4) |
 | Typosquatting / reposquatting against a trust corpus | **Enforced** (M5) |
-| Vulnerability metadata (OSV) | Not yet enforced (M6) |
+| Vulnerability metadata (OSV), per severity and profile | **Enforced** (M6) |
 | Socket scans / Firewall / provider health | Not yet enforced (M7) |
 | `curl \| sh` / `wget \| sh` denial, in every profile | **Enforced** (M8) |
 | GitHub Actions full-SHA pinning; network events | **Enforced** (M8) |

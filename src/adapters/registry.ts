@@ -20,6 +20,7 @@ import { mostSevereClassification } from "../core/events.ts";
 import type { FileMutation } from "../core/manifest.ts";
 import type { Profile } from "../core/profiles.ts";
 import type { ReleaseLookup } from "../core/release-age.ts";
+import type { VulnerabilityLookup } from "../core/vulnerability.ts";
 
 export interface AdapterContext {
   readonly repoRoot: string;
@@ -156,6 +157,19 @@ export interface EcosystemAdapter {
     version: string,
     ctx: AdapterContext,
   ): Promise<ReleaseLookup>;
+
+  /**
+   * What does a vulnerability database know about this artifact? (SPEC 16)
+   *
+   * Same contract as `resolveReleaseDate`: called only for an artifact already
+   * heading for a human gate, allowed to reach the network, and never throws --
+   * every failure is a lookup the profile can weigh.
+   */
+  resolveVulnerabilities?(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<VulnerabilityLookup>;
 }
 
 /**
@@ -228,6 +242,11 @@ export interface AdapterRegistry {
     version: string,
     ctx: AdapterContext,
   ): Promise<ReleaseLookup | undefined>;
+  resolveVulnerabilities(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<VulnerabilityLookup | undefined>;
 }
 
 /**
@@ -369,6 +388,21 @@ export function createAdapterRegistry(
         } catch (error) {
           // A thrown lookup is an unavailable answer, not an absent one: the
           // profile must still get to fail closed on it.
+          return {
+            kind: "unavailable",
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      return undefined;
+    },
+
+    async resolveVulnerabilities(artifact, version, ctx) {
+      for (const adapter of registered.values()) {
+        if (adapter.resolveVulnerabilities === undefined) continue;
+        try {
+          return await adapter.resolveVulnerabilities(artifact, version, ctx);
+        } catch (error) {
           return {
             kind: "unavailable",
             reason: error instanceof Error ? error.message : String(error),

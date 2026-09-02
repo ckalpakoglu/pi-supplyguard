@@ -34,8 +34,8 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M3 | Manifest engine: semantic `go.mod`/`go.sum` state, snapshots, vendor detection and drift | Complete |
 | M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | Complete |
 | M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | Complete |
-| M6 | Vulnerability metadata: OSV, provider abstraction | **Next** |
-| M7 | Socket integration: artifact/manifest scans, health, Firewall | Not started |
+| M6 | Vulnerability metadata: OSV, provider abstraction | Complete |
+| M7 | Socket integration: artifact/manifest scans, health, Firewall | **Next** |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
 | M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Not started |
 
@@ -55,6 +55,7 @@ src/core/approval.ts      the human gate; the only producer of a grant
 src/core/justification.ts the agent's rationale (SPEC 11.2); one-shot, in-memory
 src/core/release-age.ts   the cooldown policy; the date comes from an adapter
 src/core/trust.ts         the protected identity corpus; NOT an allow-list
+src/core/vulnerability.ts severity policy; the database is an adapter's business
 src/analyzers/            similarity and component-aware identity analysis
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means

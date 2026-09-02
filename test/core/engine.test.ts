@@ -273,6 +273,7 @@ test("an internal engine failure fails closed", async () => {
       projectDecisions: async () => [],
       describe: async () => [],
       resolveReleaseDate: async () => undefined,
+      resolveVulnerabilities: async () => undefined,
       inspectToolCall: async () => {
         throw new Error("registry exploded");
       },

@@ -48,8 +48,10 @@ import {
   GO_SUM,
   VENDOR_MODULES,
 } from "./project.ts";
+import { lookupVulnerabilities, type OsvOptions } from "./osv.ts";
 import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
 import type { ReleaseLookup } from "../../core/release-age.ts";
+import type { VulnerabilityLookup } from "../../core/vulnerability.ts";
 
 /**
  * Pull the shell command out of a tool call.
@@ -273,8 +275,12 @@ function inspectGoFileMutation(mutation: FileMutation): readonly SupplyChainEven
  * @param proxy injectable proxy access. Tests pass a fake; nothing in the test
  * suite is allowed to reach the network.
  */
-export function createGoAdapter(proxy: ProxyOptions = {}): EcosystemAdapter {
+export function createGoAdapter(
+  proxy: ProxyOptions = {},
+  osv: OsvOptions = { ...(proxy.env === undefined ? {} : { env: proxy.env }) },
+): EcosystemAdapter {
   const releaseDates = new Map<string, ReleaseLookup>();
+  const vulnerabilities = new Map<string, VulnerabilityLookup>();
 
   return {
     id: GO_ECOSYSTEM,
@@ -293,6 +299,26 @@ export function createGoAdapter(proxy: ProxyOptions = {}): EcosystemAdapter {
 
       const lookup = await lookupReleaseDate(artifact, version, proxy);
       releaseDates.set(key, lookup);
+      return lookup;
+    },
+
+    /**
+     * SPEC 16 -- known vulnerabilities, from OSV.
+     *
+     * Cached per process like the release date. Advisories DO change, unlike a
+     * publication date, but re-querying within a single session would trade a
+     * disclosure and a round trip for a freshness nobody needs mid-task.
+     */
+    async resolveVulnerabilities(
+      artifact: string,
+      version: string,
+    ): Promise<VulnerabilityLookup> {
+      const key = `${artifact}@${version}`;
+      const cached = vulnerabilities.get(key);
+      if (cached !== undefined) return cached;
+
+      const lookup = await lookupVulnerabilities(artifact, version, osv);
+      vulnerabilities.set(key, lookup);
       return lookup;
     },
 
