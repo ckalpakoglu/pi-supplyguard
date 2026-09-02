@@ -201,3 +201,49 @@ test("an adapter floor tightens a baseline but never loosens one", async () => {
   assert.equal(floating.decision, "deny");
   assert.deepEqual(approving.prompts, [], "a denial is never offered for approval");
 });
+
+// The reason a command was unreadable used to be computed and thrown away, so
+// the audit record said UNKNOWN_RISK without saying what triggered it.
+test("an unreadable command carries its reason through to the caller", async () => {
+  const result = await createGoAdapter().inspectToolCall(
+    { toolName: "bash", input: { command: "sudo -u root go get foo@latest" } },
+    { repoRoot: "/repo", profile: "standard" },
+  );
+
+  assert.equal(result.classification, "UNKNOWN_RISK");
+  assert.equal(result.notes?.length, 1);
+  assert.match(result.notes?.[0] ?? "", /wrapper was not recognized/);
+});
+
+// Reconciliation must be able to tell a manifest this command was approved to
+// write from one an editing tool rewrote behind the gate's back.
+test("only manifest-writing go commands announce an expected manifest change", async () => {
+  const ctx = { repoRoot: "/repo", profile: "standard" as const };
+  const expects = async (command: string) =>
+    (
+      await createGoAdapter().inspectToolCall(
+        { toolName: "bash", input: { command } },
+        ctx,
+      )
+    ).expectsManifestChange;
+
+  for (const command of [
+    "go get github.com/foo/bar@v1.2.3",
+    "go mod tidy",
+    "go mod vendor",
+    "go mod init example.com/app",
+    "go work use ./app",
+  ]) {
+    assert.equal(await expects(command), true, command);
+  }
+
+  for (const command of ["go build ./...", "go test ./...", "ls", "sed -i s/a/b/ go.mod"]) {
+    assert.equal(await expects(command), false, command);
+  }
+
+  assert.equal(
+    await expects("sudo -u root go get foo@v1.0.0"),
+    false,
+    "an unreadable command is not a licence to rewrite manifests unnoticed",
+  );
+});
