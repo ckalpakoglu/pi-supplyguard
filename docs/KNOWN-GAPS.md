@@ -22,7 +22,7 @@ against the M3 tree, not inferred from the code.
 M3 closed the "indirect mutation is invisible" gap: a `go.mod` rewritten by
 `sed`, Python or a generated script is detected by comparing before/after
 snapshots and becomes the same normalized event a `go get` would have produced.
-Three limits come with that design, and none of them is an accident.
+Four limits come with that design, and none of them is an accident.
 
 **It is detected on the NEXT tool call, not before the edit lands.** The Pi host
 fires `tool_call` *before* a tool runs, so the earliest SupplyGuard can observe
@@ -46,6 +46,26 @@ running `go get x@v1.2.3 && sed -i s/y/evil/ go.mod` therefore gets one approval
 covering both. Verifying that the observed diff matches the approved artifact is
 M4 work (the approval object already carries the artifact and version).
 
+The same expectation is attributed to ONE following call. If the host ever
+dispatches a batch of tool calls whose hooks all fire before any of them
+executes, the expectation is whatever the last hook in the batch set — which is
+conservative unless that last call is itself a manifest-writing Go command.
+
+**A change made and reverted inside ONE tool call is invisible.** Reconciliation
+compares states, not history:
+
+```text
+sed -i s/v1.2.3/v9.9.9/ go.mod && go build ./... && git checkout go.mod
+```
+
+leaves `go.mod` byte-identical, so the next snapshot matches and nothing is
+reported — while the build ran against the unapproved version. No hook the host
+offers helps here: `tool_result` fires after the revert has already happened, so
+observing it would show the same clean state. Closing this needs either
+filesystem-level watching or a network-level control on the fetch itself
+(Socket Firewall, M7). Until then, a `THIRD_PARTY_CAPABLE` build in a repository
+an agent can also write to is not an admission boundary.
+
 ### 1.2 A rejected manifest state blocks every later call until it is reverted
 
 When an unapproved manifest change is denied, the baseline deliberately does not
@@ -67,6 +87,13 @@ full-SHA GitHub Actions references in hardened/paranoid. Neither exists yet.
 The shell parser in `src/generic/shell.ts` already produces the pipeline-aware
 view this needs — `curl … | sh` parses into two simple commands — so M8 is
 wiring, not new parsing.
+
+Workflow files are also absent from the manifest snapshot set, which SPEC §14.1
+includes. That is deliberate: snapshotting `.github/workflows/*.yml` before M8
+would gate every unrelated CI edit with an `ASK` and no security signal to show
+for it, because nothing yet knows a mutable action reference from a renamed job.
+It also needs glob support in `readManifestSnapshot`, which today takes a fixed
+path list.
 
 **Closed by:** M8.
 

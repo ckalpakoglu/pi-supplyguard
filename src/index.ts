@@ -116,6 +116,8 @@ interface RepoSession {
   expectManifestChange: boolean;
   /** Project questions already put to this human in this session. */
   readonly asked: Set<string>;
+  /** Answers read from durable state, cached so every call does not re-read it. */
+  stored?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -306,8 +308,18 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     return async (request) => {
       const session = repoSession(project.repoRoot);
       const state = await loadState(project.paths.state);
-      const stored = getProjectDecisions(state, project.repoRoot)[request.id];
-      if (stored !== undefined) return { value: stored.value, source: "stored" };
+      if (session.stored === undefined) {
+        session.stored = Object.fromEntries(
+          Object.entries(getProjectDecisions(state, project.repoRoot)).map(
+            ([id, decision]) => [id, decision.value],
+          ),
+        );
+      }
+      const stored = session.stored[request.id];
+      // A remembered answer is not news: it is recorded in the audit log of the
+      // call where the human gave it, and repeating it on every later call
+      // would bury the records that matter.
+      if (stored !== undefined) return { value: stored, source: "stored" };
 
       if (!ctx.hasUI) {
         // SPEC 13.3 / 9.3: headless sessions are not asked and are not
@@ -343,6 +355,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       }
 
       const decidedAt = now().toISOString();
+      session.stored = { ...session.stored, [request.id]: chosen.value };
       try {
         await saveState(
           project.paths.state,

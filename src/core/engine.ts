@@ -321,10 +321,14 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     for (const request of await ctx.registry.projectDecisions({ ...adapterCtx, decisions })) {
       const resolved = await ctx.resolveProjectDecision(request);
       if (resolved.value !== undefined) decisions[request.id] = resolved.value;
-      notes.push(
-        resolved.note ??
-          `project decision ${request.id}: ${resolved.value ?? "unanswered"} (${resolved.source})`,
-      );
+      // A stored answer was already audited when the human gave it; repeating
+      // it on every later call would bury the records that matter.
+      if (resolved.source !== "stored") {
+        notes.push(
+          resolved.note ??
+            `project decision ${request.id}: ${resolved.value ?? "unanswered"} (${resolved.source})`,
+        );
+      }
     }
   }
 
