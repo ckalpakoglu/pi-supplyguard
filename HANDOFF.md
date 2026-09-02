@@ -2,7 +2,11 @@
 
 **Last updated:** 2026-09-02
 **Branch:** `feature/m3-manifest-engine` → merged to `main`
-**State:** `npm run check` green — typecheck clean, full suite passing.
+**State:** `npm run check` green — typecheck clean, full suite passing. The
+suite is instrumented to make zero network calls and start zero processes.
+
+All nine milestones are closed. What v1.0 still needs is in
+"SPEC §25 audit" below.
 
 This file is navigation for whoever picks the project up next. It does not
 duplicate `docs/KNOWN-GAPS.md`, which is the authoritative record of what is
@@ -97,26 +101,47 @@ src/generic/shell.ts      shell parser shared by command analysis
 - **The Pi host package is deliberately not installed.** `types/pi-coding-agent.d.ts`
   is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
 
-## What M9 needs
+## SPEC §25 audit — what v1.0 still needs
 
-M9 is adversarial hardening, and three of its targets are already written down
-as limits rather than intentions:
+The roadmap is finished; the v1.0 success criteria are not, and the gap is one
+subsystem rather than a long tail. Fourteen of the seventeen criteria hold and
+have tests:
 
-- **A manifest change made and reverted inside ONE tool call** is invisible to
-  reconciliation, because it compares states rather than history
-  (`docs/KNOWN-GAPS.md` §1.1). No hook the host offers helps; this needs
-  filesystem-level watching or a network-level control on the fetch.
-- **Vendored `.go` source is not tracked** — only `vendor/modules.txt` (§1.8).
-  With vendoring enforced the build compiles from `vendor/`, so an edit there
-  changes nothing SupplyGuard watches.
-- **A hostile co-installed extension** can rewrite a command SupplyGuard already
-  approved, because the host does not re-validate `event.input` after a handler
-  mutates it (§1.10).
+| Criterion | State |
+|---|---|
+| `standard` is the default profile | Met |
+| standard/hardened/paranoid decisions are contract-tested | Met |
+| Existing Go vendor projects detected and preserved | Met |
+| Paranoid blocks dependency mutation until vendoring is established | Met |
+| Unversioned and `@latest` operations blocked | Met |
+| `GOSUMDB=off` blocked | Met |
+| Direct **and indirect** `go.mod`/`go.sum` changes become semantic events | Met |
+| New dependencies/upgrades require human approval | Met |
+| Release cooldown and scoped override behavior per profile | Met |
+| Trust corpus enables component-aware typo/repository-squatting analysis | Met |
+| Mutable GitHub Actions and installer pipelines enforced | Met |
+| Paranoid fails closed on provider outage, vendored offline builds still work | Met |
+| All security decisions and overrides auditable | Met |
+| Chief and spawned workers receive identical enforcement | Met |
+| The core remains ecosystem-independent | Met |
+| **Hardened asks once whether to enable Socket Firewall** | **Not met** |
+| **Paranoid requires Socket manifest evaluation and protected fetch** | **Partly** — artifact scanning only |
 
-The bypass corpus in `test/go/bypass.test.ts` and `test/core/reconcile.test.ts`
-is where new cases belong. `AGENTS.md` §"Chief / Worker Invariant" is already
-pinned by tests; what is not covered is a systematic sweep of headless
-behaviour across every gate M4–M7 added.
+All three shortfalls are the same decision: M7 integrates the Socket CLI, not
+Socket Firewall (`docs/KNOWN-GAPS.md` §1.5). Closing them means a protected
+fetch path — proxy, registry or wrapper, capability-detected per SPEC §13.9 —
+plus `socket scan create` for the manifest scan, plus the ask-once Hardened
+prompt, for which the machinery already exists and is in service for the vendor
+question.
+
+Two other things stand between the current tree and a release:
+
+- **`peerDependencies` still pins the host at `*`.** The hand-written
+  declarations were checked member by member against 0.84.4 on one workstation
+  (§1.11); that is not compatibility testing.
+- **`socket package score` requires a Socket API token.** Worth knowing before
+  anyone runs `paranoid`: without one, every artifact scan is unavailable, and
+  paranoid denies new dependencies on that basis.
 
 ## Verification
 

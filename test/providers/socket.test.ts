@@ -360,3 +360,56 @@ test("hardened continues with a warning when Socket is absent", async () => {
   const h = await runtimeWithSocket("hardened", SCORE_OK, { healthy: false });
   assert.equal(await h.run(), undefined, "local hardened policy remains in force");
 });
+
+// SPEC 13.4 / 25: "Already-approved vendored dependencies may continue to
+// build and test offline when the graph is unchanged." A paranoid session with
+// no Socket at all must still be able to work in a vendored repository — the
+// gate is on new trust, not on the repository.
+test("paranoid builds and tests offline in a vendored repo with no Socket", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "supplyguard-offline-repo-"));
+  const home = await mkdtemp(join(tmpdir(), "supplyguard-offline-home-"));
+  tempRoots.push(repo, home);
+  await writeFile(join(repo, ".supplyguard.yaml"), "version: 1\nprofile: paranoid\n");
+  await writeFile(join(repo, "go.mod"), "module m\n\ngo 1.22\n");
+  await mkdir(join(repo, "vendor"), { recursive: true });
+  await writeFile(join(repo, "vendor", "modules.txt"), "");
+
+  const runtime = createRuntime({
+    home,
+    env: {},
+    proxy: { env: { GOPROXY: "off" } },
+    osv: { env: { GOPROXY: "off" } },
+    // Nothing is reachable: no Socket, no proxy, no OSV.
+    socket: { run: async () => ({ ok: false, stdout: "", reason: "not installed" }) },
+  });
+  const ctx = {
+    cwd: repo,
+    hasUI: false,
+    mode: "print" as const,
+    ui: {
+      select: async () => undefined,
+      confirm: async () => false,
+      input: async () => undefined,
+      notify: () => {},
+    },
+    sessionManager: { getSessionId: () => "session-1" },
+  };
+
+  for (const command of ["go build ./...", "go test ./...", "ls", "git status"]) {
+    assert.equal(
+      await runtime.onToolCall(
+        { toolName: "bash", toolCallId: "1", input: { command } },
+        ctx as never,
+      ),
+      undefined,
+      `${command} must work offline against a vendored tree`,
+    );
+  }
+
+  // ... while a NEW trust decision still fails closed.
+  const blocked = await runtime.onToolCall(
+    { toolName: "bash", toolCallId: "2", input: { command: "go get github.com/foo/bar@v1.2.3" } },
+    ctx as never,
+  );
+  assert.equal(blocked?.block, true);
+});
