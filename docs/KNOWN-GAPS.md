@@ -43,8 +43,12 @@ was watching.
 call.** `go get x@v1.2.3` is expected to rewrite `go.mod`, so the resulting
 change is reconciled and audited rather than re-gated. A single tool call
 running `go get x@v1.2.3 && sed -i s/y/evil/ go.mod` therefore gets one approval
-covering both. Verifying that the observed diff matches the approved artifact is
-M4 work (the approval object already carries the artifact and version).
+covering both. Two things bound it, both enforced and tested: the operation must
+be one that actually writes a manifest (a read-only `go mod verify` cannot
+vouch for anything), and a human must have **approved** it — "the call was not
+blocked" is not enough. Verifying that the observed diff matches the approved
+artifact is M4 work (the approval object already carries the artifact and
+version).
 
 The same expectation is attributed to ONE following call. If the host ever
 dispatches a batch of tool calls whose hooks all fire before any of them
@@ -132,7 +136,10 @@ written:
 Drift is also only reported on supply-chain-relevant calls: `ls` in a repository
 with a stale vendor tree is not gated. "Deny completion" (SPEC §4.4) is rendered
 as "deny the operations that matter", because SupplyGuard has no task-completion
-hook.
+hook. `go mod vendor` is deliberately exempt from the drift finding it would
+otherwise trip: denying the only command that repairs the state would leave
+editing configuration as the sole way out, and SPEC §17.2 rules that out as an
+override. It still passes the normal gate on its own merits.
 
 ### 1.6 Non-`go.mod` manifests are classified coarsely
 
@@ -146,6 +153,12 @@ special case: it removes the checksums Go verifies against and is a
 A tracked file larger than 4 MiB (`MAX_TRACKED_BYTES`) is hashed but not
 retained, so a change to it is reported as an unclassifiable manifest mutation.
 It is still gated; it just cannot be explained.
+
+Vendored **source** is not tracked at all — only `vendor/modules.txt`. That
+matches SPEC §14.1, but it is worth saying plainly: with vendoring enforced the
+build compiles from `vendor/`, and editing a vendored `.go` file changes nothing
+SupplyGuard watches. Hashing a whole vendor tree on every tool call is not the
+answer; noticing it is M9's problem.
 
 ### 1.7 `go generate` is treated as merely capable
 
@@ -389,6 +402,61 @@ classified as downgrade"* and both pseudo-version ordering tests.
 > D8–D10 were found in inherited, uncommitted M3 work before it shipped. They
 > are logged because the defect log is evidence about the test corpus, not about
 > who wrote the bug.
+
+### D11 — a read-only `go mod` subcommand laundered arbitrary manifest rewrites
+
+**Severity: critical.** The reconciliation expectation was derived from the
+subcommand *word*, so `go mod verify`, `go mod why`, `go mod graph` and
+`go work sync` all announced "this call rewrites manifests" while producing no
+operation and no event. The runtime then armed the flag on `!blocked` — true of
+every allowed call — so the next call's file changes were reconciled instead of
+gated:
+
+```text
+go mod verify && sed -i s/foo/evil/ go.mod   ->  allowed, unprompted, UNAUDITED
+```
+
+The audit record it left was actively false: "reconciled 1 tracked file
+change(s) with the preceding approved operation", when nothing had been
+approved. It worked in `paranoid` too, via `go work sync`. Fixed on both sides:
+the flag now comes from the recognized *operations*, and only an operation a
+human **approved** can vouch for a change.
+Pinned by *"a read-only go subcommand cannot vouch for a manifest rewrite"*,
+*"a denied manifest-writing command does not vouch for the next change"* and
+*"only manifest-writing go commands announce an expected manifest change"*;
+mutation-checked.
+
+### D12 — a shadowed `replace` could be redirected to a remote module invisibly
+
+**Severity: critical.** The semantic diff keys directives in a `Map`, and the
+replace key discarded the version on the left of the arrow. Two version-scoped
+replaces of the same module collapsed to one, so rewriting the shadowed entry —
+including pointing it at attacker-controlled code, the highest-risk `go.mod`
+construct per SPEC §10.5 — produced **no change at all**. Duplicate `require`
+lines collapsed the same way. Fixed by making the left-hand version part of the
+replace's identity, plus a canonical-form backstop so a hash-detected change can
+never diff to silence again.
+Pinned by *"a version-scoped replace is identified by its own version"* and
+*"a change the parser cannot attribute is reported, never swallowed"*;
+mutation-checked.
+
+### D13 — unreadable top-level lines were dropped, not recorded
+
+A line that did not begin with a keyword was skipped instead of being pushed to
+`unparsed`, contradicting the parser's own contract and removing the backstop
+that makes unmodelled structure visible in a diff. Fixed.
+Pinned by *"an unreadable top-level line stays visible in unparsed"*.
+
+### D14 — pseudo-version ordering was inverted against its base tag
+
+`comparePseudo` ranked `v1.2.3-pre.0.<ts>-<hash>` *below* `v1.2.3-pre`. Semver
+ranks the longer identifier list higher, so every such bump was reported as a
+downgrade — D10's defect class, in the branch D10's tests never reached
+(replacing the whole function body with `return 0` used to pass the suite).
+Fixed, and both branches are now tested.
+Pinned by *"a pseudo-version sorts after the base tag it extends"* and
+*"a pseudo-version bump over its base tag is an upgrade, not a downgrade"*;
+mutation-checked.
 
 ---
 

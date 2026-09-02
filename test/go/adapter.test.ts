@@ -231,13 +231,27 @@ test("only manifest-writing go commands announce an expected manifest change", a
     "go get github.com/foo/bar@v1.2.3",
     "go mod tidy",
     "go mod vendor",
-    "go mod init example.com/app",
-    "go work use ./app",
+    "go mod download",
+    "go mod edit -require=example.com/x@v1.0.0",
   ]) {
     assert.equal(await expects(command), true, command);
   }
 
-  for (const command of ["go build ./...", "go test ./...", "ls", "sed -i s/a/b/ go.mod"]) {
+  // SECURITY: read-only `go mod`/`go work` subcommands must NOT vouch for a
+  // manifest change. Deriving this from the subcommand word instead of the
+  // recognized operation let `go mod verify && sed -i go.mod` launder an
+  // arbitrary rewrite with no gate and no audit record at all.
+  for (const command of [
+    "go mod verify",
+    "go mod why all",
+    "go mod graph",
+    "go mod init example.com/app",
+    "go work sync",
+    "go build ./...",
+    "go test ./...",
+    "ls",
+    "sed -i s/a/b/ go.mod",
+  ]) {
     assert.equal(await expects(command), false, command);
   }
 

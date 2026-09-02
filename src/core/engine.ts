@@ -332,19 +332,17 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     }
   }
 
+  const callEvents: readonly SupplyChainEvent[] = [...inspection.events, ...mutationEvents];
   const projectState = await ctx.registry.inspectProjectState({
     ...adapterCtx,
     decisions,
     classification,
+    events: callEvents,
   });
   errors.push(...projectState.errors);
   notes.push(...projectState.notes);
 
-  const events: readonly SupplyChainEvent[] = [
-    ...inspection.events,
-    ...mutationEvents,
-    ...projectState.events,
-  ];
+  const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events];
 
   let evaluation = evaluateLocal(baselineFindings(classification, events, ctx.profile));
 

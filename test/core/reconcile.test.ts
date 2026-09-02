@@ -296,3 +296,65 @@ test("a stale vendor tree warns in standard and blocks in hardened", async () =>
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// D14: only an APPROVED manifest-writing operation may vouch for a file change
+// ---------------------------------------------------------------------------
+
+// A read-only `go mod` subcommand used to arm the reconciliation expectation,
+// because the flag was derived from the subcommand WORD. That gave a free,
+// unaudited window to rewrite go.mod with any editing tool.
+test("a read-only go subcommand cannot vouch for a manifest rewrite", async () => {
+  for (const cover of ["go mod verify", "go mod why all", "go mod graph", "go work sync"]) {
+    const h = await harness({ answer: "Deny" });
+    await h.write("go.mod", BASE_GO_MOD);
+    await h.call("ls");
+
+    assert.equal(await h.call(cover), undefined, `${cover} is not itself gated`);
+    await h.write("go.mod", "module example.com/app\n\ngo 1.22\n\nrequire github.com/evil/pkg v6.6.6\n");
+
+    const blocked = await h.call("ls");
+    assert.equal(blocked?.block, true, `${cover} must not launder the rewrite`);
+  }
+});
+
+// SECURITY: "not blocked" is not "approved". A denied mutation must not vouch
+// for anything either.
+test("a denied manifest-writing command does not vouch for the next change", async () => {
+  const h = await harness({ answer: "Deny" });
+  await h.write("go.mod", BASE_GO_MOD);
+  await h.call("ls");
+
+  assert.equal((await h.call("go mod tidy"))?.block, true, "the human said no");
+  await h.write("go.mod", `${BASE_GO_MOD}\nrequire github.com/evil/pkg v0.0.1\n`);
+
+  assert.equal((await h.call("ls"))?.block, true, "the refused command vouches for nothing");
+});
+
+// SPEC 17.2: disabling the plugin is not the override mechanism, so the gate
+// must never be the only thing standing between the repository and the command
+// that fixes it.
+test("the command that repairs vendor drift is not denied by that drift", async () => {
+  for (const profile of ["hardened", "paranoid"] as const) {
+    const h = await harness({ answer: "Approve once", profile });
+    await h.write("go.mod", BASE_GO_MOD);
+    await import("node:fs/promises").then((fs) =>
+      fs.mkdir(join(h.repo, "vendor"), { recursive: true }),
+    );
+    await h.write(
+      "vendor/modules.txt",
+      "# github.com/foo/bar v1.0.0\n## explicit\ngithub.com/foo/bar\n",
+    );
+
+    assert.equal(
+      await h.call("go mod vendor"),
+      undefined,
+      `${profile} must let the operator refresh the vendor tree`,
+    );
+    assert.equal(
+      (await h.call("go build ./..."))?.block,
+      true,
+      `${profile} still denies building against a stale tree`,
+    );
+  }
+});

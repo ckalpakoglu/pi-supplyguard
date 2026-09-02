@@ -208,6 +208,7 @@ async function projectState(
   options: {
     readonly classification?: "SUPPLY_CHAIN_IRRELEVANT" | "THIRD_PARTY_CAPABLE" | "THIRD_PARTY_MUTATION";
     readonly decisions?: Readonly<Record<string, string>>;
+    readonly events?: readonly SupplyChainEvent[];
   } = {},
 ) {
   const result = await adapter.inspectProjectState?.({
@@ -215,6 +216,7 @@ async function projectState(
     profile,
     decisions: options.decisions ?? {},
     classification: options.classification ?? "THIRD_PARTY_CAPABLE",
+    events: options.events ?? [],
   });
   assert.ok(result !== undefined, "the Go adapter must report project state");
   return result;

@@ -152,6 +152,16 @@ export interface EcosystemAdapter {
  */
 export interface ProjectStateContext extends ProjectDecisionContext {
   readonly classification: ToolCallClassification;
+  /**
+   * Events already produced for this call, by the command gate and by manifest
+   * reconciliation.
+   *
+   * An adapter needs them to avoid gating the operation that FIXES the state it
+   * is reporting: denying `go mod vendor` because the vendor tree is stale
+   * leaves no way out but editing configuration, which SPEC 17.2 says is not
+   * the override mechanism.
+   */
+  readonly events: readonly SupplyChainEvent[];
 }
 
 export interface AdapterError {

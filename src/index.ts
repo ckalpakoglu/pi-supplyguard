@@ -417,7 +417,14 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     // accepted. After a DENY it stays put, so the rejected mutation is
     // reconciled again on the next call instead of being inherited as clean.
     if (!outcome.blocked) session.baseline = outcome.manifestSnapshot;
-    session.expectManifestChange = !outcome.blocked && outcome.expectsManifestChange;
+    // SECURITY: only an operation a human APPROVED may vouch for the file
+    // changes that follow it. "Not blocked" is far too weak a test -- it is
+    // also true of every allowed call, so any command that merely looked like a
+    // manifest writer would launder the next call's mutations. Every Go
+    // operation that writes a manifest is a THIRD_PARTY_MUTATION and therefore
+    // passes a human gate, so nothing legitimate is lost.
+    session.expectManifestChange =
+      outcome.expectsManifestChange && outcome.approval?.granted === true;
 
     for (const warning of outcome.warnings) {
       notify(ctx, `SupplyGuard: ${warning}`, "warning");

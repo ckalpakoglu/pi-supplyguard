@@ -269,3 +269,76 @@ test("go.sum diff reports added and removed lines", () => {
   assert.equal(diff.removed.length, 1);
   assert.equal(diff.removed[0]?.version, "v1.2.3");
 });
+
+// D11: a pseudo-version extends its base tag's prerelease, so it sorts ABOVE
+// it. Reading that backwards reported every such bump as a downgrade — the
+// same defect class as D10, in the branch D10's tests never reached.
+test("a pseudo-version sorts after the base tag it extends", () => {
+  const base = "v1.2.3-pre";
+  const pseudo = "v1.2.3-pre.0.20230101120000-abcdef123456";
+  assert.equal(compareVersions(base, pseudo) < 0, true);
+  assert.equal(compareVersions(pseudo, base) > 0, true);
+
+  const later = "v1.2.3-pre.0.20240101120000-abcdef123456";
+  assert.equal(compareVersions(pseudo, later) < 0, true);
+  assert.equal(compareVersions(later, pseudo) > 0, true);
+  assert.equal(compareVersions(pseudo, pseudo), 0);
+});
+
+test("a pseudo-version bump over its base tag is an upgrade, not a downgrade", () => {
+  const before = "module m\n\ngo 1.22\n\nrequire github.com/a v1.2.3-pre\n";
+  const after = "module m\n\ngo 1.22\n\nrequire github.com/a v1.2.3-pre.0.20230101120000-abcdef123456\n";
+  assert.deepEqual(kinds(diffText(before, after).changes), ["upgrade"]);
+  assert.deepEqual(kinds(diffText(after, before).changes), ["downgrade"]);
+});
+
+// D12: the diff is built from maps, and a map collapses duplicate keys. A
+// version-scoped replace shadowed by another for the same module used to diff
+// to NOTHING — including when it was redirected to a remote module.
+test("a version-scoped replace is identified by its own version", () => {
+  const before = "module m\n\nreplace github.com/a v1.0.0 => ./local1\nreplace github.com/a v2.0.0 => ./local2\n";
+  const after = "module m\n\nreplace github.com/a v1.0.0 => github.com/evil/x v6.6.6\nreplace github.com/a v2.0.0 => ./local2\n";
+
+  const diff = diffText(before, after);
+  assert.deepEqual(kinds(diff.changes), ["replace-change"]);
+  assert.equal(diff.dependencyGraphChanged, true);
+  const change = diff.changes[0];
+  assert.equal(change?.kind === "replace-change" ? change.replace.to : "", "github.com/evil/x");
+
+  const mod = parseGoMod(before);
+  assert.deepEqual(
+    mod.replaces.map((r) => [r.from, r.fromVersion, r.to]),
+    [
+      ["github.com/a", "v1.0.0", "./local1"],
+      ["github.com/a", "v2.0.0", "./local2"],
+    ],
+  );
+});
+
+// The backstop for the whole map-collapse class: a hash-detected change must
+// never diff to silence, whatever directive shape produced it.
+test("a change the parser cannot attribute is reported, never swallowed", () => {
+  const before = "module m\n\nrequire github.com/a v1.0.0\n";
+  const after = "module m\n\nrequire github.com/a v6.6.6\nrequire github.com/a v1.0.0\n";
+  const diff = diffText(before, after);
+  assert.deepEqual(kinds(diff.changes), ["other"]);
+  assert.equal(diff.metadataChanged, true);
+});
+
+// D13: a top-level line the parser cannot read is evidence, not noise. The
+// diff's "unparsed changed" check is what makes an unmodelled directive visible.
+test("an unreadable top-level line stays visible in unparsed", () => {
+  const mod = parseGoMod('module m\n\ngo 1.22\n\n)\n"quoted" thing\n@@@\n');
+  assert.deepEqual(mod.unparsed, [")", '"quoted" thing', "@@@"]);
+  assert.deepEqual(
+    kinds(diffText("module m\n\ngo 1.22\n", 'module m\n\ngo 1.22\n\n@@@\n').changes),
+    ["other"],
+  );
+});
+
+test("a comment that merely mentions indirect does not mark a requirement indirect", () => {
+  const mod = parseGoMod("module m\n\nrequire github.com/a v1.0.0 // see also: indirect deps\n");
+  assert.equal(mod.requires[0]?.indirect, false);
+  const real = parseGoMod("module m\n\nrequire github.com/a v1.0.0 // indirect\n");
+  assert.equal(real.requires[0]?.indirect, true);
+});

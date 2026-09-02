@@ -86,13 +86,21 @@ function parsePlain(version: string): ParsedVersion | undefined {
   };
 }
 
-/** Identical base + prerelease: the newer pseudo-timestamp wins. */
+/**
+ * Identical base + prerelease: the newer pseudo-timestamp wins.
+ *
+ * When only ONE side is a pseudo-version, that side sorts LATER: it carries
+ * additional prerelease identifiers (`.0.<timestamp>-<hash>`), and semver ranks
+ * a longer identifier list above the prefix it extends. `v1.2.3-pre` therefore
+ * precedes `v1.2.3-pre.0.20230101120000-abcdef123456`, and reading it the other
+ * way round reports every such bump as a downgrade.
+ */
 function comparePseudo(a: ParsedVersion, b: ParsedVersion): number {
   if (a.pseudoTimestamp !== undefined && b.pseudoTimestamp !== undefined) {
     return a.pseudoTimestamp < b.pseudoTimestamp ? -1 : a.pseudoTimestamp > b.pseudoTimestamp ? 1 : 0;
   }
-  if (a.pseudoTimestamp !== undefined) return -1;
-  if (b.pseudoTimestamp !== undefined) return 1;
+  if (a.pseudoTimestamp !== undefined) return 1;
+  if (b.pseudoTimestamp !== undefined) return -1;
   return 0;
 }
 
@@ -123,6 +131,14 @@ export interface GoRequire {
 /** Replace directive: `old [vX] => new [vY]`; local targets have no version. */
 export interface GoReplace {
   readonly from: string;
+  /**
+   * The version on the LEFT of the arrow, when the replace is version-scoped.
+   *
+   * Part of the directive's identity: `replace a v1.0.0 => ./x` and
+   * `replace a v2.0.0 => ./y` are two different replaces of the same module,
+   * and keying only on `from` would let one silently shadow the other.
+   */
+  readonly fromVersion?: string;
   readonly to: string;
   /** Present only for remote targets. */
   readonly version?: string;
@@ -235,7 +251,13 @@ export function parseGoMod(text: string): GoMod {
     const head = /^(\w+)\s*(.*)$/.exec(line);
     const keyword = head?.[1];
     const rest = head?.[2]?.trim() ?? "";
-    if (keyword === undefined) continue;
+    if (keyword === undefined) {
+      // A line that does not even start with a keyword is still evidence: the
+      // module docstring promises nothing is guessed away, and `diffGoMod`
+      // relies on `unparsed` to notice structure it did not model.
+      unparsed.push(line);
+      continue;
+    }
 
     if (keyword === "module" && rest !== "") {
       module.value = rest.replace(/^"|"$/g, "");
@@ -335,12 +357,16 @@ function feedDirective(
   sinks.replaces.push({
     from,
     to,
+    ...(left[1] === undefined ? {} : { fromVersion: left[1] }),
     ...(right[1] === undefined ? {} : { version: right[1] }),
   });
 }
 
 function isIndirect(line: string, comment: string): boolean {
-  return /\bindirect\b/.test(comment) || /\+indirect\b/.test(line);
+  // Go writes exactly `// indirect`. Anchoring means prose that merely mentions
+  // the word ("see also: indirect deps") does not silently reclassify a direct
+  // requirement.
+  return /^indirect\b/.test(comment.trim()) || /\+indirect\b/.test(line);
 }
 
 /** A single semantic change between two go.mod documents. */
@@ -402,10 +428,10 @@ export function diffGoMod(before: GoMod, after: GoMod): GoModDiff {
     }
   }
 
-  const beforeRepl = new Map(before.replaces.map((r) => [r.from, r] as const));
-  const afterRepl = new Map(after.replaces.map((r) => [r.from, r] as const));
-  for (const [from, replace] of afterRepl) {
-    const old = beforeRepl.get(from);
+  const beforeRepl = new Map(before.replaces.map((r) => [replaceKey(r), r] as const));
+  const afterRepl = new Map(after.replaces.map((r) => [replaceKey(r), r] as const));
+  for (const [key, replace] of afterRepl) {
+    const old = beforeRepl.get(key);
     if (old === undefined) {
       changes.push({ kind: "replace-add", replace });
       continue;
@@ -414,8 +440,8 @@ export function diffGoMod(before: GoMod, after: GoMod): GoModDiff {
       changes.push({ kind: "replace-change", replace, fromReplace: old });
     }
   }
-  for (const from of beforeRepl.keys()) {
-    if (!afterRepl.has(from)) changes.push({ kind: "replace-remove", from });
+  for (const [key, old] of beforeRepl) {
+    if (!afterRepl.has(key)) changes.push({ kind: "replace-remove", from: old.from });
   }
 
   const beforeExcl = new Set(before.excludes.map((e) => `${e.path}@${e.version}`));
@@ -455,6 +481,20 @@ export function diffGoMod(before: GoMod, after: GoMod): GoModDiff {
     changes.push({ kind: "other", summary: "unrecognized go.mod structure changed" });
   }
 
+  // SECURITY BACKSTOP: the comparisons above are all map-based, and a map
+  // collapses duplicate keys. If the documents differ in anything the parser
+  // read but nothing above noticed, say so rather than report silence -- a
+  // shadowed `replace` redirected to a remote module would otherwise be an
+  // invisible edit.
+  if (changes.length === 0 && canonical(before) !== canonical(after)) {
+    changes.push({
+      kind: "other",
+      summary:
+        "go.mod changed in a way the parser could not attribute to a single directive " +
+        "(duplicate or shadowed directives)",
+    });
+  }
+
   const graphKinds = new Set(["add", "upgrade", "downgrade", "remove", "replace-add", "replace-change", "replace-remove", "exclude-add", "exclude-remove", "indirect-flag"]);
   const dependencyGraphChanged = changes.some((c) => graphKinds.has(c.kind));
 
@@ -463,6 +503,36 @@ export function diffGoMod(before: GoMod, after: GoMod): GoModDiff {
     dependencyGraphChanged,
     metadataChanged: changes.some((c) => c.kind === "other"),
   };
+}
+
+/** A replace is identified by the module AND the version it is scoped to. */
+function replaceKey(replace: GoReplace): string {
+  return `${replace.from}@${replace.fromVersion ?? ""}`;
+}
+
+/**
+ * Canonical rendering of everything the parser understood.
+ *
+ * Two documents with the same canonical form differ only in formatting,
+ * comments or directive order. It is the backstop for the invariant the diff
+ * depends on: a change the hash detected must never diff to NOTHING. Any map
+ * built by this module collapses duplicate keys, and a collapsed duplicate
+ * would otherwise be an invisible edit.
+ */
+function canonical(mod: GoMod): string {
+  const lines = [
+    `module ${mod.module ?? ""}`,
+    `go ${mod.go ?? ""}`,
+    `toolchain ${mod.toolchain ?? ""}`,
+    ...mod.requires.map((r) => `require ${r.path} ${r.version} ${r.indirect}`).sort(),
+    ...mod.replaces
+      .map((r) => `replace ${replaceKey(r)} => ${r.to} ${r.version ?? ""}`)
+      .sort(),
+    ...mod.excludes.map((e) => `exclude ${e.path} ${e.version}`).sort(),
+    ...mod.retracts.map((r) => `retract ${r.version}`).sort(),
+    ...[...mod.unparsed].sort().map((line) => `? ${line}`),
+  ];
+  return lines.join("\n");
 }
 
 function splitAtLastAt(key: string): [string | undefined, string | undefined] {

@@ -67,8 +67,8 @@ Specific limits of the current implementation (details in
   unapproved manifest edit", not "the edit cannot happen". The baseline is
   established on the first tool call in a session, so changes made while Pi
   was not running are the starting point rather than a mutation, and a single
-  approved manifest-writing command covers everything else it changed in the
-  same tool call.
+  human-approved manifest-writing command covers everything else it changed in
+  the same tool call.
 - No release-age cooldown, dependency justification or scoped overrides
   (M4). `releaseAge.minimumDays` is parsed but not consumed.
 - No typosquatting or repository-squatting analysis, and no trust corpus

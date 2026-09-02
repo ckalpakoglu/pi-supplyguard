@@ -73,6 +73,9 @@ function toEvent(operation: GoOperation): SupplyChainEvent {
     ...(operation.minimumDecision === undefined
       ? {}
       : { minimumDecision: operation.minimumDecision }),
+    // Marks `go mod vendor` so project-state inspection does not deny the one
+    // command that makes a stale vendor tree current again.
+    ...(operation.refreshesVendor === true ? { detail: { refreshesVendor: true } } : {}),
   };
 }
 
@@ -344,7 +347,22 @@ export function createGoAdapter(): EcosystemAdapter {
         (project.hasVendorTree &&
           ctx.decisions[VENDOR_MODE_DECISION] !== VENDOR_OPTIONAL);
 
-      if (enforced && project.vendorState === "stale") {
+      // `go mod vendor` IS the remedy. Denying it because the tree it is about
+      // to rewrite is stale would leave the repository with no way forward but
+      // editing configuration, which SPEC 17.2 rules out as an override. The
+      // command still passes the normal gate on its own merits: it is a
+      // THIRD_PARTY_MUTATION and therefore asks.
+      const repairsVendor = ctx.events.some(
+        (event) =>
+          event.ecosystem === GO_ECOSYSTEM && event.detail?.["refreshesVendor"] === true,
+      );
+
+      if (enforced && project.vendorState === "stale" && repairsVendor) {
+        notes.push(
+          `the vendor tree is stale (${project.driftReasons.join("; ")}); this command ` +
+            `refreshes it`,
+        );
+      } else if (enforced && project.vendorState === "stale") {
         events.push({
           eventClass: "VendorDrift",
           ecosystem: GO_ECOSYSTEM,

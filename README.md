@@ -80,9 +80,9 @@ Enforced now:
   tool call and compared on the next one, so a change made by `sed`, a Python
   script or generated code becomes the same normalized event a `go get` would
   have produced — add, upgrade, downgrade, remove, replace, exclude. Deleting
-  `go.sum` is a checksum bypass and is denied in every profile. An approved
-  operation that is *supposed* to rewrite a manifest is reconciled and audited
-  instead of being asked about twice. Detection happens on the following tool
+  `go.sum` is a checksum bypass and is denied in every profile. A command a human
+  approved and that is *supposed* to rewrite a manifest — and only such a
+  command — is reconciled and audited instead of being asked about twice. Detection happens on the following tool
   call: Pi's hook runs before a tool executes, so the boundary is "the agent
   cannot keep working after an unapproved edit", not "the edit cannot happen".
 - **Go vendor model:** an existing vendor tree is detected and, after a
@@ -168,7 +168,7 @@ land):
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
-| Manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
+| Tracked manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
 | Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |
 | Vendor tree that no longer matches `go.mod` | Warn | Deny | Deny |
 | Dependency mutation with no vendor tree | Allow | Allow | Deny |

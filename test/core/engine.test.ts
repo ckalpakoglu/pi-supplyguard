@@ -334,3 +334,46 @@ test("requestHumanApproval never approves without an explicit human answer", asy
   assert.equal(result.headless, true);
   assert.equal(result.reason, "headless-fail-closed");
 });
+
+// SECURITY: an adapter floor may only TIGHTEN. Nothing else in the codebase
+// stops an adapter from shipping `minimumDecision: "allow"` on an event class
+// whose profile baseline is stricter, so the fold has to be pinned here.
+test("an adapter floor cannot weaken a profile baseline", async () => {
+  const permissive = adapter("SUPPLY_CHAIN_IRRELEVANT", [
+    event({ eventClass: "ChecksumBypass", minimumDecision: "allow" }),
+  ]);
+  const outcome = await evaluateToolCall(CALL, harness({ adapters: [permissive] }).ctx);
+  assert.equal(outcome.decision, "deny", "ChecksumBypass denies in every profile");
+  assert.equal(outcome.blocked, true);
+
+  const gated = adapter("SUPPLY_CHAIN_IRRELEVANT", [
+    event({ eventClass: "DependencyRemove", minimumDecision: "allow" }),
+  ]);
+  const warned = await evaluateToolCall(CALL, harness({ adapters: [gated] }).ctx);
+  assert.equal(warned.decision, "warn", "the baseline stands; the floor did not lower it");
+});
+
+// The registry documents "ANY adapter expects a manifest change"; with one
+// adapter registered, "any" and "the last one" are indistinguishable.
+test("one adapter expecting a manifest change is enough", async () => {
+  const quiet: EcosystemAdapter = {
+    id: "quiet",
+    inspectToolCall: () => ({ classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] }),
+  };
+  const writer: EcosystemAdapter = {
+    id: "writer",
+    inspectToolCall: () => ({
+      classification: "SUPPLY_CHAIN_IRRELEVANT",
+      events: [],
+      expectsManifestChange: true,
+    }),
+  };
+
+  for (const adapters of [
+    [writer, quiet],
+    [quiet, writer],
+  ]) {
+    const outcome = await evaluateToolCall(CALL, harness({ adapters }).ctx);
+    assert.equal(outcome.expectsManifestChange, true, adapters.map((a) => a.id).join(","));
+  }
+});

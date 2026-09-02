@@ -73,8 +73,9 @@ src/generic/shell.ts      shell parser shared by command analysis
   would report every commit, pull and editor save made while Pi was not running
   as an unapproved mutation.
 - **An approved manifest-writing command is not asked about twice.** Adapters
-  set `expectsManifestChange`; the next call reconciles and audits the change
-  instead of re-gating it.
+  set `expectsManifestChange` from the *recognized operation*, never from the
+  command word, and the wiring layer arms it only when a human **approved** the
+  call. Both halves were security defects once (D11); neither is decoration.
 - **Vendor drift is derived from disk, not from a dirty flag.** `go.mod` versus
   `vendor/modules.txt` gives SPEC §9.4's semantics without state that a restart
   or an out-of-band edit could desynchronize.

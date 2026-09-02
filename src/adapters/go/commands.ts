@@ -62,10 +62,10 @@ function checksumBypass(name: string, value: string): string | undefined {
   if (upper === "GOINSECURE" && lower !== "") {
     return "GOINSECURE disables module transport security";
   }
-  if (upper === "GONOSUMDB" || (upper === "GOPRIVATE" && (lower === "*" || lower === "*/*"))) {
+  if (upper === "GONOSUMDB") return "GONOSUMDB suppresses checksum verification";
+  if (upper === "GOPRIVATE" && (lower === "*" || lower === "*/*")) {
     return "GOPRIVATE=* disables checksum verification for every module";
   }
-  if (upper === "GONOSUMDB") return "GONOSUMDB suppresses checksum verification";
   return undefined;
 }
 
@@ -81,6 +81,18 @@ export interface GoOperation {
    * `mostRestrictive`, so it can only ever tighten (SPEC 6.1).
    */
   readonly minimumDecision?: Decision;
+  /**
+   * True when THIS operation rewrites go.mod/go.sum/go.work or the vendor tree.
+   *
+   * SECURITY: read-only subcommands (`go mod verify`, `go mod why`,
+   * `go mod graph`, `go work sync`) must never set this. Manifest
+   * reconciliation uses it to decide which observed file changes were produced
+   * by an operation that already passed the gate, so a command that is not a
+   * manifest writer must not be able to vouch for one.
+   */
+  readonly writesManifests?: boolean;
+  /** True for `go mod vendor`: the operation that makes a stale tree current. */
+  readonly refreshesVendor?: boolean;
 }
 
 export interface GoAnalysis {
@@ -89,14 +101,18 @@ export interface GoAnalysis {
   /** Non-secret explanations, e.g. why a command could not be read. */
   readonly notes: readonly string[];
   /**
-   * True when the command is expected to rewrite go.mod/go.sum/go.work.
+   * True when a RECOGNIZED operation in this command rewrites go.mod, go.sum,
+   * go.work or the vendor tree.
    *
    * Used by manifest reconciliation (SPEC 14.2) to tell a file change this
    * command produced from one an editing tool made behind the gate's back.
-   * `go mod init` is the reason this is not simply "the call was a mutation":
-   * it writes a manifest that contains no third-party trust at all.
+   * Derived from the operations, never from the subcommand word: `go mod` is
+   * as much `go mod verify` as it is `go mod tidy`, and the read-only half must
+   * not be able to vouch for a change it did not make.
    */
   readonly writesManifests: boolean;
+  /** True when the command refreshes the vendor tree (`go mod vendor`). */
+  readonly refreshesVendor: boolean;
 }
 
 const IRRELEVANT: GoAnalysis = {
@@ -104,10 +120,10 @@ const IRRELEVANT: GoAnalysis = {
   operations: [],
   notes: [],
   writesManifests: false,
+  refreshesVendor: false,
 };
 
-/** `go` subcommands that write go.mod, go.sum, go.work or the vendor tree. */
-const MANIFEST_WRITING_SUBCOMMANDS = new Set(["get", "mod", "work"]);
+
 
 /** Go subcommands that cannot introduce or fetch third-party code. */
 const INERT_SUBCOMMANDS = new Set(["version", "doc", "help", "fix", "clean", "tool", "bug"]);
@@ -154,6 +170,7 @@ function dependencyOperation(
   spec: ShellWord,
   eventClass: SupplyChainEventClass,
   verb: string,
+  writesManifests = false,
 ): GoOperation {
   const { artifact, version } = splitArtifact(spec.text);
 
@@ -164,6 +181,7 @@ function dependencyOperation(
       artifact,
       summary: `${verb} ${spec.text} where the version comes from an unresolved shell expansion`,
       minimumDecision: "deny",
+      ...(writesManifests ? { writesManifests } : {}),
     };
   }
 
@@ -174,6 +192,7 @@ function dependencyOperation(
       artifact,
       version,
       summary: `removes the requirement on ${artifact}`,
+      ...(writesManifests ? { writesManifests } : {}),
     };
   }
 
@@ -184,6 +203,7 @@ function dependencyOperation(
       artifact,
       summary: `${verb} ${artifact} without an exact version`,
       minimumDecision: "deny",
+      ...(writesManifests ? { writesManifests } : {}),
     };
   }
 
@@ -195,6 +215,7 @@ function dependencyOperation(
       version,
       summary: `${verb} ${artifact} at floating version "${version}"`,
       minimumDecision: "deny",
+      ...(writesManifests ? { writesManifests } : {}),
     };
   }
 
@@ -204,6 +225,7 @@ function dependencyOperation(
     artifact,
     version,
     summary: `${verb} ${artifact} at ${version}`,
+    ...(writesManifests ? { writesManifests } : {}),
   };
 }
 
@@ -226,6 +248,7 @@ function analyzeGet(args: readonly ShellWord[]): GoOperation[] {
         classification: "THIRD_PARTY_MUTATION",
         summary: `\`go get\` without an explicit module resolves versions dynamically`,
         minimumDecision: "deny",
+        writesManifests: true,
       },
     ];
   }
@@ -241,10 +264,11 @@ function analyzeGet(args: readonly ShellWord[]): GoOperation[] {
           artifact: target.text,
           summary: `${verb} dependencies for "${target.text}" without exact versions`,
           minimumDecision: "deny",
+          writesManifests: true,
         } satisfies GoOperation;
       }
     }
-    return dependencyOperation(target, eventClass, verb);
+    return dependencyOperation(target, eventClass, verb, true);
   });
 }
 
@@ -288,6 +312,7 @@ function analyzeMod(args: readonly ShellWord[]): GoOperation[] {
         eventClass: "DependencyFetch",
         classification: "THIRD_PARTY_MUTATION",
         summary: "downloads module dependencies",
+        writesManifests: true,
       },
     ];
   }
@@ -297,6 +322,7 @@ function analyzeMod(args: readonly ShellWord[]): GoOperation[] {
         eventClass: "LockfileMutation",
         classification: "THIRD_PARTY_MUTATION",
         summary: "rewrites go.mod/go.sum and may add or remove requirements",
+        writesManifests: true,
       },
     ];
   }
@@ -306,6 +332,8 @@ function analyzeMod(args: readonly ShellWord[]): GoOperation[] {
         eventClass: "DependencyFetch",
         classification: "THIRD_PARTY_MUTATION",
         summary: "populates the vendor tree from module dependencies",
+        writesManifests: true,
+        refreshesVendor: true,
       },
     ];
   }
@@ -343,6 +371,7 @@ function editOperations(args: readonly ShellWord[], file: string): GoOperation[]
         classification: "THIRD_PARTY_MUTATION",
         artifact,
         summary: `edits ${file} to require ${value}`,
+        writesManifests: true,
         ...(version === undefined ? {} : { version }),
         ...(version !== undefined && isExactVersion(version)
           ? {}
@@ -355,6 +384,7 @@ function editOperations(args: readonly ShellWord[], file: string): GoOperation[]
         classification: "THIRD_PARTY_MUTATION",
         artifact: value.split("=")[0] ?? value,
         summary: `edits ${file} to replace ${value}`,
+        writesManifests: true,
       });
     }
     if (flag === "-droprequire" && value !== undefined) {
@@ -363,6 +393,7 @@ function editOperations(args: readonly ShellWord[], file: string): GoOperation[]
         classification: "THIRD_PARTY_MUTATION",
         artifact: value,
         summary: `edits ${file} to drop the requirement on ${value}`,
+        writesManifests: true,
       });
     }
     if (flag === "-exclude" && value !== undefined) {
@@ -371,6 +402,7 @@ function editOperations(args: readonly ShellWord[], file: string): GoOperation[]
         classification: "THIRD_PARTY_MUTATION",
         artifact: value,
         summary: `edits ${file} to exclude ${value}`,
+        writesManifests: true,
       });
     }
   }
@@ -444,7 +476,6 @@ export function analyzeCommand(command: string): GoAnalysis {
   const notes: string[] = [...parsed.notes];
   let sawGo = false;
   let capable = false;
-  let writesManifests = false;
 
   for (const simple of parsed.commands) {
     // A checksum bypass counts wherever it is set, even on a non-Go command:
@@ -461,8 +492,6 @@ export function analyzeCommand(command: string): GoAnalysis {
     const rest = simple.argv.slice(2);
 
     if (sub === undefined || INERT_SUBCOMMANDS.has(sub)) continue;
-
-    if (MANIFEST_WRITING_SUBCOMMANDS.has(sub)) writesManifests = true;
 
     if (sub === "get") operations.push(...analyzeGet(rest));
     else if (sub === "install") operations.push(...analyzeInstall(rest));
@@ -495,13 +524,23 @@ export function analyzeCommand(command: string): GoAnalysis {
       notes,
       // An unreadable command is not a licence to rewrite manifests unnoticed.
       writesManifests: false,
+      refreshesVendor: false,
     };
   }
 
+  const writesManifests = operations.some((op) => op.writesManifests === true);
+  const refreshesVendor = operations.some((op) => op.refreshesVendor === true);
+
   if (operations.length === 0) {
     return capable
-      ? { classification: "THIRD_PARTY_CAPABLE", operations, notes, writesManifests }
-      : { ...IRRELEVANT, notes, writesManifests };
+      ? {
+          classification: "THIRD_PARTY_CAPABLE",
+          operations,
+          notes,
+          writesManifests,
+          refreshesVendor,
+        }
+      : { ...IRRELEVANT, notes, writesManifests, refreshesVendor };
   }
 
   const mutation = operations.some((op) => op.classification === "THIRD_PARTY_MUTATION");
@@ -510,5 +549,6 @@ export function analyzeCommand(command: string): GoAnalysis {
     operations,
     notes,
     writesManifests,
+    refreshesVendor,
   };
 }

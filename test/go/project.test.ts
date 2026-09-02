@@ -159,3 +159,22 @@ test("a go.work-only repository is still a Go project", async () => {
   assert.equal(project.hasGoWork, true);
   assert.equal(project.hasGoMod, false);
 });
+
+// The replace-skip is load-bearing in both directions: without it every
+// replaced module reports permanent drift, and it must not hide a real
+// mismatch on a module that is NOT replaced.
+test("dropping the replace-skip would report drift for every replaced module", () => {
+  const replaced = `${GO_MOD}\nreplace github.com/foo/bar => github.com/fork/bar v9.9.9\n`;
+  const vendored = parseVendorModules(
+    "# github.com/foo/bar v9.9.9\n## explicit\n# golang.org/x/text v0.14.0\n## explicit\n",
+  );
+  assert.deepEqual(vendorDrift(parseGoMod(replaced), vendored), []);
+
+  // ... while an unreplaced module at the wrong version is still drift.
+  const stale = parseVendorModules(
+    "# github.com/foo/bar v9.9.9\n## explicit\n# golang.org/x/text v0.1.0\n## explicit\n",
+  );
+  const reasons = vendorDrift(parseGoMod(replaced), stale);
+  assert.equal(reasons.length, 1);
+  assert.match(reasons[0] ?? "", /golang\.org\/x\/text/);
+});
