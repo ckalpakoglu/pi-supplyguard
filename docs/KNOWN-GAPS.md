@@ -1,8 +1,6 @@
 # Known Gaps and Defect Log
 
-**Status:** M1, M2 and M3 complete. M4 partially complete — dependency
-justification is enforced; release cooldown and scoped overrides are not.
-M5–M9 not started.
+**Status:** M1–M4 complete. M5–M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -110,25 +108,36 @@ nothing about any of them:
 
 | Capability | Milestone |
 |---|---|
-| Release cooldown / minimum release age | M4 |
-| Scoped one-shot overrides with a reason | M4 |
 | Trust corpus, typosquatting, repository-squatting | M5 |
 | Vulnerability data (OSV) | M6 |
 | Socket artifact/manifest scans, Firewall, provider health | M7 |
 
-`config.releaseAgeMinimumDays` is parsed and carried through the precedence
-chain so the layering is testable, but **nothing consumes it**. `/supplyguard-status`
-labels it "enforced from M4" for exactly this reason. Release age needs a
-publication date, which means an outbound request to the Go module proxy — the
-first network call SupplyGuard would ever make, and a design decision in its own
-right (see `HANDOFF.md`).
+The approval object is still partial. SPEC §11.2 lists vulnerability findings,
+similarity findings and transitive impact alongside the purpose, stdlib and
+release-age fields; the first three arrive with M5 and M6. The approval prompt
+shows what it has and does not pretend the rest was checked.
 
-The approval object is therefore still partial. SPEC §11.2 lists release age,
-vulnerability findings, similarity findings and transitive impact alongside the
-purpose and stdlib fields; only the agent-supplied half exists today. The
-approval prompt shows what it has and does not pretend the rest was checked.
+### 1.5 The release-age lookup is a network request, with everything that implies
 
-### 1.5 The Go vendor model is narrower than SPEC §9.3 describes
+Release cooldown (SPEC §11.1) needs a publication date, and for Go that means
+asking the module proxy — the only outbound request SupplyGuard makes.
+
+- **A public proxy learns which modules a repository takes on.** `GOPRIVATE` and
+  `GONOPROXY` are honored *before* a request is built, and `GOPROXY=off`/`direct`
+  disable lookups entirely. A module covered by any of those is reported as
+  "not applicable" and never queried — which also means its age is never
+  checked, in any profile.
+- **A proxy outage is not a bypass.** Standard and hardened warn; paranoid
+  denies and, per SPEC §17.3, does *not* offer a one-shot override for it. The
+  way out is to restore access or change the profile deliberately.
+- **The date is cached per process, never persisted**, and the cooldown is only
+  consulted for artifacts already heading for a human gate — a build command
+  costs no request.
+- The lookup has never been exercised against the live proxy in CI: the test
+  suite is verified to make zero network calls, and every proxy behaviour is
+  covered with an injected `fetch`.
+
+### 1.6 The Go vendor model is narrower than SPEC §9.3 describes
 
 Vendor drift is enforced (SPEC §9.4), the ask-once vendor question is asked and
 persisted (SPEC §9.2), and Paranoid denies a dependency mutation in a project
@@ -157,7 +166,7 @@ longer requires only when the tree marks it `## explicit`. A non-explicit
 leftover is not reported. Editing `vendor/modules.txt` is itself gated, so this
 is bounded, but it is not the same test `go build -mod=vendor` runs.
 
-### 1.6 Non-`go.mod` manifests are classified coarsely
+### 1.7 Non-`go.mod` manifests are classified coarsely
 
 `go.mod` gets a full semantic diff (add / upgrade / downgrade / remove /
 replace / exclude). `go.sum`, `go.work`, `go.work.sum` and `vendor/modules.txt`
@@ -176,7 +185,7 @@ build compiles from `vendor/`, and editing a vendored `.go` file changes nothing
 SupplyGuard watches. Hashing a whole vendor tree on every tool call is not the
 answer; noticing it is M9's problem.
 
-### 1.7 `go generate` is treated as merely capable
+### 1.8 `go generate` is treated as merely capable
 
 ```text
 go generate ./...  ->  THIRD_PARTY_CAPABLE
@@ -191,7 +200,7 @@ warn across the profiles.
 `CAPABLE_SUBCOMMANDS`; the reason it has not been made is that no one has
 assessed the false-positive cost on repositories that generate routinely.
 
-### 1.8 A hostile co-installed extension can rewrite an approved command
+### 1.9 A hostile co-installed extension can rewrite an approved command
 
 The Pi host allows a `tool_call` handler to mutate `event.input`, and does not
 re-validate it afterwards. An extension registered after SupplyGuard could
@@ -202,7 +211,7 @@ cannot defend against a later handler that does.
 
 **Closed by:** M9, to the extent it can be. Documented in `src/index.ts`.
 
-### 1.9 The host API surface is hand-written and only spot-verified
+### 1.10 The host API surface is hand-written and only spot-verified
 
 `@earendil-works/pi-coding-agent` is an optional peerDependency and is
 deliberately **not installed**: pulling ~136 transitive packages into a
@@ -228,7 +237,7 @@ Consequences that stand:
 **Mitigation:** compatibility testing against a pinned host before publication.
 The peerDependency range is still `*` pending that work.
 
-### 1.10 A non-numeric wrapper flag value degrades to unknown risk
+### 1.11 A non-numeric wrapper flag value degrades to unknown risk
 
 ```text
 sudo -u root go get foo@latest  ->  UNKNOWN_RISK   (not a precise DENY)
@@ -244,7 +253,7 @@ The result is conservative and correct — standard/hardened ask, paranoid denie
 — but it is less precise than the `DENY` the same operation earns unwrapped.
 Running `go` as another user is arguably worth flagging in its own right.
 
-### 1.11 Configuration changes take up to 5 seconds to apply
+### 1.12 Configuration changes take up to 5 seconds to apply
 
 `.supplyguard.yaml` is re-read when the cached copy is older than
 `CONFIG_TTL_MS` (5s). Staleness is bounded and can only ever withhold a
@@ -327,7 +336,19 @@ Recording a justification grants nothing: it is evidence at the gate, the human
 still decides, and it is consumed by one operation on one version (SPEC §11.3,
 §17.2).
 
-### 2.7 Delegated workers cannot mutate dependencies at all
+### 2.7 An override cannot lift an invariant, whatever the human answers
+
+SPEC §17.2 scopes an override to one policy, one artifact, one version, one
+execution. SupplyGuard adds a fourth constraint the SPEC implies but does not
+spell out: a finding has to *opt in* to being waivable, and only the release
+cooldown does. A floating version, a checksum bypass, a missing justification or
+paranoid's vendoring requirement produce denials that no prompt offers to lift —
+the override is never even displayed.
+
+The guard lives in `applyHumanOverride`, not at the call site, because a call
+site can be edited by someone who has not read §17.2.
+
+### 2.8 Delegated workers cannot mutate dependencies at all
 
 Human decision, 2026-09-01, recorded in `AGENTS.md`. A headless worker's `ASK`
 fails closed, so the Chief performs dependency trust decisions with a human
@@ -392,7 +413,7 @@ through"*; mutation-checked.
 
 Adding or tightening `.supplyguard.yaml` had no effect until Pi restarted. Not
 exploitable — layers may only tighten — but surprising. Fixed with a 5s TTL
-(§1.11).
+(§1.12).
 Pinned by *"a project configuration added mid-session is picked up once the
 cache expires"*; mutation-checked.
 
@@ -507,7 +528,7 @@ mutation-checked.
   (added by this branch) and `license: Apache-2.0` is backed by the `LICENSE`
   file.
 - `peerDependencies` pins `@earendil-works/pi-coding-agent` at `*`, deliberately
-  deferred until compatibility testing (§1.9).
+  deferred until compatibility testing (§1.10).
 
 Publishing is a human-approved operation (`AGENTS.md`) and none of this blocks
 development, but the peer range still needs compatibility work before release.
@@ -520,5 +541,5 @@ development, but the peer range still needs compatibility work before release.
 - A defect gets an entry naming the test that pins it. No entry without a test.
 - When a milestone closes a gap, delete the entry — do not mark it "done". This
   file describes the present, not the history of intentions.
-- `grep -rn "ponytail:" src/` lists the deliberate shortcuts in code; §1.11 is
+- `grep -rn "ponytail:" src/` lists the deliberate shortcuts in code; §1.12 is
   the current one.

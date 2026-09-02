@@ -19,6 +19,7 @@ import type {
 import { mostSevereClassification } from "../core/events.ts";
 import type { FileMutation } from "../core/manifest.ts";
 import type { Profile } from "../core/profiles.ts";
+import type { ReleaseLookup } from "../core/release-age.ts";
 
 export interface AdapterContext {
   readonly repoRoot: string;
@@ -142,6 +143,19 @@ export interface EcosystemAdapter {
 
   /** Non-secret status lines for `/supplyguard-status` (SPEC 19.2). */
   describe?(ctx: ProjectDecisionContext): Promise<readonly string[]> | readonly string[];
+
+  /**
+   * When was this artifact published? (SPEC 11.1)
+   *
+   * Called only for an artifact that is already heading for a human gate, so
+   * it is allowed to be slow and to reach the network. It must never throw:
+   * every failure is a `ReleaseLookup` the profile can weigh.
+   */
+  resolveReleaseDate?(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<ReleaseLookup>;
 }
 
 /**
@@ -203,6 +217,17 @@ export interface AdapterRegistry {
   projectDecisions(ctx: ProjectDecisionContext): Promise<readonly ProjectDecisionRequest[]>;
   /** Status lines from every adapter. Never throws: status must always render. */
   describe(ctx: ProjectDecisionContext): Promise<readonly string[]>;
+  /**
+   * First adapter answer for an artifact's publication date.
+   *
+   * `undefined` when no adapter has an opinion, which is different from an
+   * adapter saying it could not find out.
+   */
+  resolveReleaseDate(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<ReleaseLookup | undefined>;
 }
 
 /**
@@ -334,6 +359,23 @@ export function createAdapterRegistry(
         }
       }
       return lines;
+    },
+
+    async resolveReleaseDate(artifact, version, ctx) {
+      for (const adapter of registered.values()) {
+        if (adapter.resolveReleaseDate === undefined) continue;
+        try {
+          return await adapter.resolveReleaseDate(artifact, version, ctx);
+        } catch (error) {
+          // A thrown lookup is an unavailable answer, not an absent one: the
+          // profile must still get to fail closed on it.
+          return {
+            kind: "unavailable",
+            reason: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+      return undefined;
     },
 
     async projectDecisions(ctx) {

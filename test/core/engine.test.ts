@@ -272,6 +272,7 @@ test("an internal engine failure fails closed", async () => {
       inspectProjectState: async () => ({ events: [], errors: [], notes: [] }),
       projectDecisions: async () => [],
       describe: async () => [],
+      resolveReleaseDate: async () => undefined,
       inspectToolCall: async () => {
         throw new Error("registry exploded");
       },

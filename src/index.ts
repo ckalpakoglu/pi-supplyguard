@@ -36,6 +36,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 
 import { createGoAdapter } from "./adapters/go/index.ts";
+import type { ProxyOptions } from "./adapters/go/proxy.ts";
 import { createAdapterRegistry, type AdapterRegistry } from "./adapters/registry.ts";
 import type { ApprovalUi } from "./core/approval.ts";
 import {
@@ -88,6 +89,14 @@ export interface RuntimeOptions {
   readonly env?: PathEnvironment;
   readonly home?: string;
   readonly now?: () => Date;
+  /**
+   * Module-proxy access for release-age lookups (SPEC 11.1).
+   *
+   * Tests MUST set `env: { GOPROXY: "off" }` or inject `fetch`: a suite that
+   * silently reaches proxy.golang.org is slow, flaky, and tells a public
+   * service which module names appear in this repository's fixtures.
+   */
+  readonly proxy?: ProxyOptions;
 }
 
 export interface SupplyGuardRuntime {
@@ -180,6 +189,8 @@ function uiPort(ctx: ExtensionContext): ApprovalUi {
   return {
     hasUI: ctx.hasUI,
     select: (title, options, opts) => ctx.ui.select(title, options, opts),
+    // Paranoid exceptional overrides need a typed reason (SPEC 11.1).
+    input: (title, placeholder, opts) => ctx.ui.input(title, placeholder, opts),
     notify: (message, level) => ctx.ui.notify(message, level),
   };
 }
@@ -197,7 +208,8 @@ function notify(
 }
 
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
-  const registry = options.registry ?? createAdapterRegistry([createGoAdapter()]);
+  const registry =
+    options.registry ?? createAdapterRegistry([createGoAdapter(options.proxy ?? {})]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();
@@ -425,6 +437,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
       justifications: session.justifications,
+      releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
@@ -594,7 +607,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Ecosystem adapters   ${registry.size()} registered${
           registry.size() === 0 ? " (none)" : ` (${adapters})`
         }`,
-        `  Release cooldown     ${config.releaseAgeMinimumDays} days (enforced from M4)`,
+        `  Release cooldown     ${config.releaseAgeMinimumDays} days`,
         `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
         `  Manifest baseline    ${
           session.baseline === undefined
@@ -613,10 +626,10 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Audit                ${config.auditEnabled ? "enabled" : "disabled"}  ${project.paths.audit}`,
         `  Local state          ${project.paths.state}`,
         `  Session              ${ctx.hasUI ? "interactive" : "headless"} (${ctx.mode})`,
-        `  Enforcement          Go command gate (M2) and manifest reconciliation`,
-        `                       plus vendor state (M3) active. Release cooldown,`,
-        `                       identity, vulnerability and Socket checks arrive`,
-        `                       in M4-M7.`,
+        `  Enforcement          Go command gate (M2), manifest reconciliation and`,
+        `                       vendor state (M3), dependency justification and`,
+        `                       release cooldown (M4) active. Identity,`,
+        `                       vulnerability and Socket checks arrive in M5-M7.`,
       ];
 
       if (project.loaded.warnings.length > 0) {

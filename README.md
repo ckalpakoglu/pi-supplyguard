@@ -52,8 +52,8 @@ control that overstates its coverage is worse than none. This section
 describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
 config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
-complete, and M4 is partially done — dependency justification is enforced,
-release cooldown and scoped overrides are not. Everything in
+complete, as is M4 (dependency justification, release cooldown, scoped
+one-shot overrides). Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -101,6 +101,18 @@ Enforced now:
   rationale shown next to the change. Recording a justification is **not**
   approval — it is evidence at the gate, and it covers one module at one
   version for one run.
+- **Release cooldown:** a version published inside the cooldown window
+  (10 days by default) warns in `standard` and is denied in `hardened` and
+  `paranoid`, with a one-shot override a human can grant — and `paranoid`
+  demands a written reason for it. The publication date comes from the Go
+  module proxy, the only outbound request SupplyGuard makes; `GOPRIVATE`,
+  `GONOPROXY` and `GOPROXY=off` are honored before a request is built, so a
+  private module is never named to a public service. A proxy that cannot answer
+  warns below `paranoid` and fails closed in it, with no override (SPEC §17.3).
+- **Scoped overrides:** an override waives one denial, for one artifact at one
+  version, for one execution, and is audited with its reason. Only the cooldown
+  opts into being waivable — a floating version, a checksum bypass or a missing
+  justification is never offered an override.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -110,10 +122,8 @@ Enforced now:
 
 Not yet implemented (planned milestones M4–M9):
 
-- release-age cooldown and scoped one-shot overrides (M4) —
-  `releaseAge.minimumDays` is parsed but not yet consumed, so the approval
-  object carries the agent's rationale but not the release age, vulnerability
-  or similarity findings SPEC §11.2 also lists;
+- vulnerability, similarity and transitive-impact findings in the approval
+  object (M5, M6);
 - typosquatting / repository-squatting analysis with a trust corpus (M5);
 - vulnerability metadata, e.g. OSV (M6);
 - Socket scans and Socket Firewall (M7);
@@ -178,6 +188,8 @@ land):
 | Unversioned / `@latest` / floating Go dependency or tool op | Deny | Deny | Deny |
 | Exact-version dependency add/upgrade/replace, tool install, third-party execution | Ask | Ask | Ask |
 | The same, with no recorded justification | Deny | Deny | Deny |
+| Artifact published inside the release cooldown | Warn + Ask | Deny + override | Deny + override with a written reason |
+| Release date unavailable (proxy unreachable) | Warn | Warn | Deny, no override |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |

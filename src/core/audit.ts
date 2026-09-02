@@ -173,6 +173,13 @@ export interface AuditRecord {
     readonly granted: boolean;
     readonly reason: string;
   };
+  /** A scoped one-shot override and the reason a human gave for it (SPEC 17.2). */
+  readonly override?: {
+    readonly offered: boolean;
+    readonly granted: boolean;
+    readonly reason: string;
+    readonly justification?: string;
+  };
   readonly message?: string;
   readonly notes?: readonly string[];
 }

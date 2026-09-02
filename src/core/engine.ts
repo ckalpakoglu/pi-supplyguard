@@ -24,15 +24,24 @@
  * normalized event (SPEC 7, 27.1).
  */
 
-import { requestHumanApproval, type ApprovalReason, type ApprovalUi } from "./approval.ts";
+import {
+  requestHumanApproval,
+  requestHumanOverride,
+  type ApprovalReason,
+  type ApprovalUi,
+  type OverrideReason,
+} from "./approval.ts";
 import type { AuditRecord, AuditSink } from "./audit.ts";
 import {
   addLocalFindings,
   applyHumanApproval,
+  applyHumanOverride,
   evaluateLocal,
   explain,
+  isOverridable,
   localFinding,
   mostRestrictive,
+  overrideNeedsReason,
   withExternalEvidence,
   type Decision,
   type Evaluation,
@@ -60,6 +69,7 @@ import {
   type JustificationStore,
 } from "./justification.ts";
 import { baselineForClassification, baselineForEvent, type Profile } from "./profiles.ts";
+import { assessReleaseAge } from "./release-age.ts";
 import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/registry.ts";
 
 /**
@@ -130,6 +140,13 @@ export interface EngineContext {
    * in tests of the pre-M4 pipeline. The Pi wiring layer always supplies one.
    */
   readonly justifications?: JustificationStore;
+  /**
+   * SPEC 11.1 -- minimum release age in days.
+   *
+   * Absent disables the cooldown, which is only ever the case in tests of the
+   * pre-M4 pipeline; the wiring layer always supplies the configured value.
+   */
+  readonly releaseAgeMinimumDays?: number;
 }
 
 export interface EngineOutcome {
@@ -141,6 +158,13 @@ export interface EngineOutcome {
   readonly blocked: boolean;
   readonly reason: string;
   readonly approval?: { readonly required: true; readonly granted: boolean; readonly reason: ApprovalReason };
+  /** Present when a denial was put to a human as a scoped override (SPEC 17.2). */
+  readonly override?: {
+    readonly offered: true;
+    readonly granted: boolean;
+    readonly reason: OverrideReason;
+    readonly justification?: string;
+  };
   readonly audited: boolean;
   /** Non-fatal problems, e.g. the audit sink failing. Never secrets. */
   readonly warnings: readonly string[];
@@ -155,6 +179,11 @@ export interface EngineOutcome {
   /** True when this call is expected to rewrite tracked files (SPEC 14.2). */
   readonly expectsManifestChange: boolean;
 }
+
+/** Finding code marking a denial whose override needs a written reason. */
+const RELEASE_AGE_REASON_REQUIRED = "release-age-exceptional";
+
+const REASON_REQUIRED_CODES: ReadonlySet<string> = new Set([RELEASE_AGE_REASON_REQUIRED]);
 
 function describeEvent(event: SupplyChainEvent): string {
   const artifact = event.artifact === undefined ? "" : ` ${event.artifact}`;
@@ -423,9 +452,46 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
 
   const justified = collectJustifications(events, ctx.justifications);
 
+  // SPEC 11.1 -- release cooldown. Only artifacts already heading for a trust
+  // decision are looked up: a build command must not cost a network request.
+  const cooldown: LocalFinding[] = [];
+  if (ctx.releaseAgeMinimumDays !== undefined) {
+    for (const event of events) {
+      if (!needsJustification(event)) continue;
+      const artifact = event.artifact ?? "";
+      const version = event.version ?? "";
+
+      const lookup = await ctx.registry.resolveReleaseDate(artifact, version, adapterCtx);
+      if (lookup === undefined) continue;
+
+      const assessment = assessReleaseAge(lookup, {
+        profile: ctx.profile,
+        minimumDays: ctx.releaseAgeMinimumDays,
+        now: now(),
+        artifact,
+        version,
+      });
+      if (assessment === undefined || assessment.decision === "allow") {
+        if (assessment !== undefined) notes.push(assessment.message);
+        continue;
+      }
+
+      cooldown.push(
+        localFinding(
+          "release-age",
+          assessment.reasonRequired ? RELEASE_AGE_REASON_REQUIRED : "release-age",
+          assessment.decision,
+          assessment.message,
+          { overridable: assessment.overridable },
+        ),
+      );
+    }
+  }
+
   let evaluation = evaluateLocal([
     ...baselineFindings(classification, events, ctx.profile),
     ...justified.findings,
+    ...cooldown,
   ]);
 
   if (errors.length > 0) {
@@ -482,6 +548,32 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     approval = { required: true, granted: result.grant.approved, reason: result.reason };
   }
 
+  // SPEC 17.2 -- a scoped one-shot override. Offered ONLY when every decisive
+  // finding opted in (`isOverridable`), which excludes every invariant: a
+  // floating version, a checksum bypass or a missing justification cannot be
+  // waived by any answer to any prompt.
+  let override: EngineOutcome["override"];
+  if (isOverridable(evaluation)) {
+    const result = await requestHumanOverride(
+      {
+        title: "SupplyGuard — override this denial once?",
+        lines: approvalLines(call, events, evaluation, justified.used),
+        profile: ctx.profile,
+        reasonRequired: overrideNeedsReason(evaluation, REASON_REQUIRED_CODES),
+      },
+      ctx.ui,
+      ctx.approvalTimeout === undefined ? { now } : { now, timeout: ctx.approvalTimeout },
+    );
+
+    evaluation = applyHumanOverride(evaluation, result.grant);
+    override = {
+      offered: true,
+      granted: result.grant.granted,
+      reason: result.reason,
+      ...(result.grant.reason === undefined ? {} : { justification: result.grant.reason }),
+    };
+  }
+
   // Defensive: nothing may leave the engine still pending. An unresolved ASK
   // would be ambiguous at the enforcement boundary, so it fails closed.
   if (evaluation.decision === "ask") {
@@ -525,6 +617,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
             ...(event.version === undefined ? {} : { version: event.version }),
           }),
       ...(approval === undefined ? {} : { approval }),
+      ...(override === undefined ? {} : { override }),
       ...(auditNotes.length === 0 ? {} : { notes: auditNotes }),
     };
 
@@ -546,6 +639,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     blocked,
     reason,
     ...(approval === undefined ? {} : { approval }),
+    ...(override === undefined ? {} : { override }),
     audited,
     warnings,
     manifestSnapshot,

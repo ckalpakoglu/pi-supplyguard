@@ -197,7 +197,13 @@ async function runtimeAt(answer?: string): Promise<{
     },
     sessionManager: { getSessionId: () => "session-1" },
   };
-  return { runtime: createRuntime({ home, env: {} }), ctx: ctx as never, rec, home, repo };
+  return {
+    runtime: createRuntime({ home, env: {}, proxy: { env: { GOPROXY: "off" } } }),
+    ctx: ctx as never,
+    rec,
+    home,
+    repo,
+  };
 }
 
 test("an unjustified dependency is denied before any human is asked", async () => {

@@ -92,7 +92,9 @@ async function harness(
   const runtime = createRuntime({
     home,
     env: {},
-    registry: createAdapterRegistry([createGoAdapter()]),
+    // No test may reach the network; release-age behaviour is covered by
+    // test/core/release-age.test.ts with an injected proxy.
+    registry: createAdapterRegistry([createGoAdapter({ env: { GOPROXY: "off" } })]),
   });
 
   const ctx = context(repo, rec, options.hasUI ?? true);

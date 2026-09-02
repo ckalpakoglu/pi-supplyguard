@@ -7,9 +7,15 @@
  * where decisions are combined, and every combinator here is monotone: the
  * result can never be less restrictive than the base it was derived from.
  *
- * The single deliberate exception is `applyHumanApproval`, which may lower a
- * pending `ask` to `allow` -- and only when handed a grant that was produced by
- * a real human gate (`src/core/approval.ts`). It can never lower a `deny`.
+ * There are exactly two deliberate exceptions, both requiring evidence that a
+ * real human answered a real prompt (`src/core/approval.ts`):
+ *
+ * - `applyHumanApproval` lowers a pending `ask` to `allow`. It can never touch
+ *   a `deny`.
+ * - `applyHumanOverride` lowers a `deny` to `allow`, and ONLY when every
+ *   finding that produced the denial is marked `overridable` (SPEC 17.2). An
+ *   invariant violation -- a floating version, a checksum bypass, a missing
+ *   justification -- is not overridable, so no prompt can lift it.
  *
  * This file is ecosystem-agnostic. No package-manager knowledge belongs here.
  */
@@ -69,6 +75,15 @@ export type FindingOrigin = (typeof FINDING_ORIGINS)[number];
  */
 export interface Finding {
   readonly origin: FindingOrigin;
+  /**
+   * True when a human may lift THIS finding once, for one artifact at one
+   * version, for one execution (SPEC 17.2).
+   *
+   * Defaults to absent, i.e. not overridable: a check has to opt in to being
+   * waivable, and the ones that do are judgement calls (release cooldown),
+   * never invariants.
+   */
+  readonly overridable?: boolean;
   /** Which check produced this, e.g. `"profile-baseline"`. Never a secret. */
   readonly source: string;
   /** Stable machine-readable code, e.g. `"event-baseline"`. */
@@ -95,8 +110,16 @@ export function localFinding(
   code: string,
   decision: Decision,
   message: string,
+  options: { readonly overridable?: boolean } = {},
 ): LocalFinding {
-  return { origin: "local", source, code, decision, message };
+  return {
+    origin: "local",
+    source,
+    code,
+    decision,
+    message,
+    ...(options.overridable === true ? { overridable: true } : {}),
+  };
 }
 
 export function externalFinding(
@@ -208,6 +231,107 @@ export function applyHumanApproval(
   return {
     decision: grant.approved ? "allow" : "deny",
     findings: [...base.findings, finding],
+  };
+}
+
+/**
+ * Evidence that a human waived a specific denial (SPEC 17.2).
+ *
+ * Constructed only by `src/core/approval.ts`, and only after an interactive
+ * prompt returned an explicit choice. `reason` is present when the profile
+ * demanded one; nothing else can supply it.
+ */
+export interface HumanOverrideGrant {
+  readonly verifiedBy: "human-ui";
+  readonly granted: boolean;
+  readonly at: string;
+  readonly reason?: string;
+}
+
+/**
+ * Can this denial be waived at all?
+ *
+ * Every finding that produced the denial must opt in. One non-overridable
+ * decisive finding -- a floating version, a checksum bypass -- makes the whole
+ * denial final, however many waivable ones sit beside it.
+ */
+export function isOverridable(evaluation: Evaluation): boolean {
+  if (evaluation.decision !== "deny") return false;
+  const decisive = decisiveFindings(evaluation);
+  return decisive.length > 0 && decisive.every((finding) => finding.overridable === true);
+}
+
+/** True when any decisive finding demands a written reason (SPEC 11.1). */
+export function overrideNeedsReason(
+  evaluation: Evaluation,
+  reasonRequiredCodes: ReadonlySet<string>,
+): boolean {
+  return decisiveFindings(evaluation).some((finding) => reasonRequiredCodes.has(finding.code));
+}
+
+/**
+ * Lower a denial a human explicitly waived.
+ *
+ * SECURITY: this is the only function in the codebase that can weaken a `deny`,
+ * so it refuses unless `isOverridable` holds -- the guard is here, not at the
+ * call site, because a call site can be edited by someone who has not read
+ * SPEC 17.2. A refused or ungranted override leaves the denial exactly as it
+ * was, with the attempt recorded.
+ */
+export function applyHumanOverride(
+  base: Evaluation,
+  grant: HumanOverrideGrant,
+): Evaluation {
+  if (!isOverridable(base)) {
+    return grant.granted
+      ? {
+          decision: base.decision,
+          findings: [
+            ...base.findings,
+            {
+              origin: "human",
+              source: "human-override",
+              code: "override-refused",
+              decision: base.decision,
+              message:
+                `An override was offered for a denial that is not waivable; the denial ` +
+                `stands.`,
+            },
+          ],
+        }
+      : base;
+  }
+
+  if (!grant.granted) {
+    return {
+      decision: "deny",
+      findings: [
+        ...base.findings,
+        {
+          origin: "human",
+          source: "human-override",
+          code: "override-declined",
+          decision: "deny",
+          message: `No override was granted at ${grant.at}.`,
+        },
+      ],
+    };
+  }
+
+  return {
+    decision: "allow",
+    findings: [
+      ...base.findings,
+      {
+        origin: "human",
+        source: "human-override",
+        code: "override-granted",
+        decision: "allow",
+        message:
+          `Overridden once by a human at ${grant.at}` +
+          `${grant.reason === undefined ? "" : `: ${grant.reason}`}.`,
+      },
+    ],
   };
 }
 

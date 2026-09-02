@@ -48,6 +48,8 @@ import {
   GO_SUM,
   VENDOR_MODULES,
 } from "./project.ts";
+import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
+import type { ReleaseLookup } from "../../core/release-age.ts";
 
 /**
  * Pull the shell command out of a tool call.
@@ -267,9 +269,32 @@ function inspectGoFileMutation(mutation: FileMutation): readonly SupplyChainEven
   ];
 }
 
-export function createGoAdapter(): EcosystemAdapter {
+/**
+ * @param proxy injectable proxy access. Tests pass a fake; nothing in the test
+ * suite is allowed to reach the network.
+ */
+export function createGoAdapter(proxy: ProxyOptions = {}): EcosystemAdapter {
+  const releaseDates = new Map<string, ReleaseLookup>();
+
   return {
     id: GO_ECOSYSTEM,
+
+    /**
+     * SPEC 11.1 -- when was this version published?
+     *
+     * Cached for the process: a published version's date never changes, and
+     * re-asking on every gated operation would be a needless request and a
+     * needless disclosure.
+     */
+    async resolveReleaseDate(artifact: string, version: string): Promise<ReleaseLookup> {
+      const key = `${artifact}@${version}`;
+      const cached = releaseDates.get(key);
+      if (cached !== undefined) return cached;
+
+      const lookup = await lookupReleaseDate(artifact, version, proxy);
+      releaseDates.set(key, lookup);
+      return lookup;
+    },
 
     sensitivePaths: () => GO_SENSITIVE_PATHS,
 

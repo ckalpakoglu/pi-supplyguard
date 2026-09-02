@@ -32,8 +32,8 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M1 | Pi skeleton: `tool_call` hook, config, profiles, decisions, audit, UI | Complete |
 | M2 | Go command gate: `go get/install/mod/env/run`, exact versions, GOSUMDB | Complete |
 | M3 | Manifest engine: semantic `go.mod`/`go.sum` state, snapshots, vendor detection and drift | Complete |
-| M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | **Partial** — justification enforced; cooldown and overrides remain |
-| M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | Not started |
+| M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | Complete |
+| M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | **Next** |
 | M6 | Vulnerability metadata: OSV, provider abstraction | Not started |
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Not started |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Not started |
@@ -53,8 +53,10 @@ src/core/state.ts         remembered state, incl. ask-once project decisions
 src/core/audit.ts         JSONL audit log and redaction (SPEC §18)
 src/core/approval.ts      the human gate; the only producer of a grant
 src/core/justification.ts the agent's rationale (SPEC 11.2); one-shot, in-memory
+src/core/release-age.ts   the cooldown policy; the date comes from an adapter
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
+src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
 src/generic/shell.ts      shell parser shared by command analysis
 ```
 
@@ -88,49 +90,28 @@ src/generic/shell.ts      shell parser shared by command analysis
 - **The Pi host package is deliberately not installed.** `types/pi-coding-agent.d.ts`
   is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
 
-## What M4 needs
+## What M5 needs
 
-Question 1 below is **answered and built**: SupplyGuard registers
-`supplyguard_justify_dependency`, an LLM-callable tool the agent must call
-before any dependency operation. `src/core/justification.ts` holds the store and
-the untrusted-argument parsing; the engine turns a missing justification into a
-DENY that names the tool. See `docs/KNOWN-GAPS.md` §2.6 for why it denies rather
-than asking with blank fields.
+`docs/SPEC.md` §12 is the specification, and it is unusually prescriptive:
+component-aware normalization (host / owner / repo / subpath), Damerau-Levenshtein
+implemented internally, normalized distance for long identifiers and absolute
+distance for short ones, and the repo-squat signal (a protected repository name
+under a different owner) as a check in its own right.
 
-What remains of M4 is release cooldown (question 2, still open) and scoped
-one-shot overrides (SPEC §17.2), which are coupled: the paranoid override that
-needs a human-entered reason exists to relax a release-age denial.
+Two things to hold on to:
 
-`docs/SPEC.md` §11 and §17 are the specification. The pieces that already exist:
+- **The trust corpus is not an allow-list.** It is a list of identities worth
+  protecting. A module that is not in it is not "untrusted"; it is simply not
+  something a typo could be aimed at. With no corpus, similarity analysis is
+  DISABLED rather than guessed, paranoid says so prominently, and no operation
+  is denied for the absence alone (SPEC §12.6).
+- **The thresholds are guesses.** 0.08 / 0.15 / 0.25 are the SPEC's own starting
+  points and it says so: they "must be calibrated against true-positive and
+  false-positive corpora before stable release". The test corpus is the
+  deliverable as much as the algorithm is.
 
-- `src/core/approval.ts` produces the human grant and is the only thing that
-  can; M4 extends the *request* with the SPEC §11.2 approval object
-  (purpose, `stdlibConsidered`, release age, findings, vendor state).
-- `config.releaseAgeMinimumDays` is parsed and layered but nothing consumes it;
-  `/supplyguard-status` labels it "enforced from M4".
-- Scoped one-shot overrides (SPEC §17.2) have no implementation at all.
-- The ask-once decision plumbing (`ProjectDecisionRequest`, state, audit) is a
-  reasonable model for pre-scoped worker approval, which `AGENTS.md` defers to
-  M4.
-
-Two questions M4 has to answer before it can be built, neither settled by the
-SPEC:
-
-1. **Where does the justification come from?** SPEC §11.2 requires `purpose`,
-   `stdlibConsidered` and "why stdlib is insufficient" in a dependency
-   approval. Those are the agent's answers, and SupplyGuard has no channel to
-   ask for them today: it sees a tool call, not a rationale. The options are a
-   SupplyGuard-registered tool the model must call before a dependency
-   operation, a slash command the human runs, or leaving the fields to the
-   human at the prompt. This is a product decision, not an implementation
-   detail.
-2. **Where does release age come from?** SPEC §11.1 needs a publication date.
-   For Go that means querying the module proxy
-   (`https://proxy.golang.org/<module>/@v/<version>.info`) over the network —
-   the first outbound request SupplyGuard would ever make. Offline behavior,
-   caching, timeouts and the per-profile failure posture (SPEC §13.8's shape)
-   all need deciding, and `GOPROXY`/`GOPRIVATE` must be respected so a private
-   module is never leaked to a public proxy.
+`resolvePaths` already returns `globalTrust` and `projectTrust` paths, and
+nothing reads them yet.
 
 ## Verification
 

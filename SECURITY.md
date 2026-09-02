@@ -5,9 +5,9 @@
 `pi-supplyguard` is **pre-release software** (version 0.1.x). Milestones M1
 (Pi skeleton: tool-call hook, configuration, profiles, decisions, audit),
 M2 (Go command gate) and M3 (manifest engine: snapshots, semantic `go.mod`
-state, vendor detection and drift) are complete. M4 is partially implemented:
-dependency justification is enforced, release cooldown and scoped overrides are
-not. M5–M9 are not implemented. See
+state, vendor detection and drift) and M4 (dependency justification, release
+cooldown, scoped one-shot overrides) are complete. M5–M9 are not implemented.
+See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -71,10 +71,13 @@ Specific limits of the current implementation (details in
   was not running are the starting point rather than a mutation, and a single
   human-approved manifest-writing command covers everything else it changed in
   the same tool call.
-- No release-age cooldown and no scoped one-shot overrides (M4).
-  `releaseAge.minimumDays` is parsed but not consumed, so an approval carries
-  the agent's stated rationale but not the release age, vulnerability or
-  similarity findings SPEC §11.2 also lists.
+- The approval object carries the agent's rationale and the release age, but
+  not the vulnerability, similarity or transitive-impact findings SPEC §11.2
+  also lists (M5, M6).
+- The release-age lookup is SupplyGuard's only outbound request. `GOPRIVATE`,
+  `GONOPROXY` and `GOPROXY=off` are honored before a request is built, so a
+  private module path is never sent to a public proxy — and its age is
+  therefore never checked either.
 - No typosquatting or repository-squatting analysis, and no trust corpus
   consumption (M5).
 - No vulnerability intelligence such as OSV (M6).
@@ -122,7 +125,8 @@ Trust boundaries:
 | Manifest snapshots / indirect `go.mod`-`go.sum` mutation detection | **Enforced** (M3, retrospective — see limits above) |
 | Vendor detection / drift; ask-once vendor model | **Enforced** (M3) |
 | Dependency justification required before a trust decision | **Enforced** (M4) |
-| Release cooldown / scoped overrides | Not yet enforced (M4) |
+| Release cooldown, per profile, with a proxy-outage posture | **Enforced** (M4) |
+| Scoped one-shot overrides, reason-required in paranoid | **Enforced** (M4) |
 | Typosquatting / reposquatting / trust corpus | Not yet enforced (M5) |
 | Vulnerability metadata (OSV) | Not yet enforced (M6) |
 | Socket scans / Firewall / provider health | Not yet enforced (M7) |
