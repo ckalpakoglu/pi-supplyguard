@@ -3,12 +3,20 @@
  *
  * Pipeline for every tool call:
  *
- *     classify (adapters)
- *       -> normalized events
+ *     snapshot sensitive files      (SPEC 14 -- reconcile the PREVIOUS call)
+ *       -> classify (adapters)
+ *       -> normalized events, from the call AND from observed file mutations
+ *       -> project state (vendor model), once its questions are answered
  *       -> local baseline policy
  *       -> external evidence (additive, tightening only)
  *       -> human gate when the result is ASK
  *       -> audit
+ *
+ * RECONCILIATION IS RETROSPECTIVE BY CONSTRUCTION. The host fires this handler
+ * BEFORE a tool runs, so a file mutation can only be observed on the next call.
+ * That is still an enforcement boundary: the agent cannot keep working after
+ * editing `go.mod` behind the gate's back, because the next tool call carries
+ * the unapproved change with it.
  *
  * ECOSYSTEM-AGNOSTIC BY CONSTRUCTION: this file contains no package-manager
  * names, command strings, manifest filenames or registry hosts. Everything
@@ -36,8 +44,16 @@ import type {
   SupplyChainEvent,
   ToolCallClassification,
 } from "./events.ts";
+import { mostSevereClassification } from "./events.ts";
+import {
+  describeMutation,
+  diffManifestSnapshot,
+  EMPTY_SNAPSHOT,
+  readManifestSnapshot,
+  type ManifestSnapshot,
+} from "./manifest.ts";
 import { baselineForClassification, baselineForEvent, type Profile } from "./profiles.ts";
-import type { AdapterRegistry } from "../adapters/registry.ts";
+import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/registry.ts";
 
 /**
  * Optional external intelligence hook (SPEC 13, M6/M7).
@@ -49,6 +65,28 @@ export type ExternalEvidenceProvider = (
   events: readonly SupplyChainEvent[],
   ctx: EngineContext,
 ) => Promise<readonly ExternalFinding[]>;
+
+/**
+ * How a project-level question was answered (SPEC 9.2, 13.3).
+ *
+ * `unanswered` is a real outcome: a dismissed prompt is not consent, and the
+ * adapter must then fall back to its own conservative default.
+ */
+export interface ResolvedProjectDecision {
+  readonly value?: string;
+  readonly source: "stored" | "human" | "headless-default" | "unanswered";
+  /** Non-secret note for the audit record. */
+  readonly note?: string;
+}
+
+/**
+ * Resolve one ask-once project question: stored answer, human prompt, or the
+ * request's conservative headless value. Supplied by the Pi wiring layer,
+ * which owns persistence.
+ */
+export type ProjectDecisionResolver = (
+  request: ProjectDecisionRequest,
+) => Promise<ResolvedProjectDecision>;
 
 export interface EngineContext {
   readonly repoRoot: string;
@@ -64,6 +102,19 @@ export interface EngineContext {
   readonly externalEvidence?: ExternalEvidenceProvider;
   /** Optional prompt timeout in ms; a timeout is never treated as approval. */
   readonly approvalTimeout?: number;
+  /**
+   * Sensitive-file state as of the previous tool call, or `undefined` for the
+   * first call in a repository. SupplyGuard reports what it observed while it
+   * was watching; it never invents a history from before it was loaded.
+   */
+  readonly manifestBaseline?: ManifestSnapshot;
+  /**
+   * True when the PREVIOUS call was an approved operation that legitimately
+   * rewrites tracked files. Its manifest changes are then reconciled and
+   * audited rather than re-gated.
+   */
+  readonly manifestChangeExpected?: boolean;
+  readonly resolveProjectDecision?: ProjectDecisionResolver;
 }
 
 export interface EngineOutcome {
@@ -78,6 +129,16 @@ export interface EngineOutcome {
   readonly audited: boolean;
   /** Non-fatal problems, e.g. the audit sink failing. Never secrets. */
   readonly warnings: readonly string[];
+  /**
+   * Sensitive-file state as read at the start of this evaluation.
+   *
+   * The caller stores it as the next baseline ONLY when the call was not
+   * denied: forgetting a rejected mutation would let a second tool call
+   * inherit it as the accepted state.
+   */
+  readonly manifestSnapshot: ManifestSnapshot;
+  /** True when this call is expected to rewrite tracked files (SPEC 14.2). */
+  readonly expectsManifestChange: boolean;
 }
 
 function describeEvent(event: SupplyChainEvent): string {
@@ -178,6 +239,10 @@ export async function evaluateToolCall(
       reason: explain(evaluation),
       audited: false,
       warnings: [`engine error: ${message}`],
+      // An evaluation that failed observed nothing, so it must not advance the
+      // baseline: the next call re-reads the repository and reconciles again.
+      manifestSnapshot: ctx.manifestBaseline ?? EMPTY_SNAPSHOT,
+      expectsManifestChange: false,
     };
     return outcome;
   }
@@ -185,42 +250,109 @@ export async function evaluateToolCall(
 
 async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<EngineOutcome> {
   const warnings: string[] = [];
+  const notes: string[] = [];
   const now = ctx.now ?? (() => new Date());
+  const adapterCtx = { repoRoot: ctx.repoRoot, profile: ctx.profile };
 
-  const inspection = await ctx.registry.inspectToolCall(call, {
-    repoRoot: ctx.repoRoot,
-    profile: ctx.profile,
-  });
+  // --- SPEC 14: reconcile what happened since the previous tool call --------
+  const watched = ctx.registry.sensitivePaths();
+  const manifestSnapshot =
+    watched.length === 0 ? EMPTY_SNAPSHOT : await readManifestSnapshot(ctx.repoRoot, watched);
+  const mutations =
+    ctx.manifestBaseline === undefined
+      ? []
+      : diffManifestSnapshot(ctx.manifestBaseline, manifestSnapshot);
 
-  const { classification, events } = inspection;
+  const inspection = await ctx.registry.inspectToolCall(call, adapterCtx);
 
-  // Fast path: nothing in this call can touch third-party trust. Installing
-  // SupplyGuard must not tax ordinary development, and harmless calls are not
-  // audited or sent anywhere (SPEC 5.1, 2.2).
+  const errors = [...inspection.errors];
+  notes.push(...inspection.notes);
+
+  const mutationEvents: SupplyChainEvent[] = [];
+  if (mutations.length > 0) {
+    for (const mutation of mutations) notes.push(describeMutation(mutation));
+
+    if (ctx.manifestChangeExpected === true) {
+      // The previous call was an approved operation that rewrites manifests.
+      // Its own trust decision already happened; recording the resulting file
+      // changes as evidence is right, re-gating them is not.
+      notes.push(
+        `reconciled ${mutations.length} tracked file change(s) with the preceding approved operation`,
+      );
+    } else {
+      const reconciled = await ctx.registry.inspectFileMutations(mutations, adapterCtx);
+      mutationEvents.push(...reconciled.events);
+      errors.push(...reconciled.errors);
+      notes.push(...reconciled.notes);
+    }
+  }
+
+  const classification = mostSevereClassification(
+    inspection.classification,
+    ...mutationEvents.map((event) => event.classification),
+  );
+
+  // Fast path: nothing in this call can touch third-party trust, and nothing
+  // changed on disk. Installing SupplyGuard must not tax ordinary development,
+  // and harmless calls are not audited or sent anywhere (SPEC 5.1, 2.2).
   if (
     classification === "SUPPLY_CHAIN_IRRELEVANT" &&
-    events.length === 0 &&
-    inspection.errors.length === 0
+    inspection.events.length === 0 &&
+    mutations.length === 0 &&
+    errors.length === 0
   ) {
     return {
       decision: "allow",
       evaluation: evaluateLocal([]),
       classification,
-      events,
+      events: inspection.events,
       blocked: false,
       reason: "",
       audited: false,
       warnings,
+      manifestSnapshot,
+      expectsManifestChange: inspection.expectsManifestChange,
     };
   }
 
+  // --- Project-level questions and state (SPEC 9.2, 9.4) -------------------
+  const decisions: Record<string, string> = {};
+  if (ctx.resolveProjectDecision !== undefined) {
+    for (const request of await ctx.registry.projectDecisions({ ...adapterCtx, decisions })) {
+      const resolved = await ctx.resolveProjectDecision(request);
+      if (resolved.value !== undefined) decisions[request.id] = resolved.value;
+      // A stored answer was already audited when the human gave it; repeating
+      // it on every later call would bury the records that matter.
+      if (resolved.source !== "stored") {
+        notes.push(
+          resolved.note ??
+            `project decision ${request.id}: ${resolved.value ?? "unanswered"} (${resolved.source})`,
+        );
+      }
+    }
+  }
+
+  const projectState = await ctx.registry.inspectProjectState({
+    ...adapterCtx,
+    decisions,
+    classification,
+  });
+  errors.push(...projectState.errors);
+  notes.push(...projectState.notes);
+
+  const events: readonly SupplyChainEvent[] = [
+    ...inspection.events,
+    ...mutationEvents,
+    ...projectState.events,
+  ];
+
   let evaluation = evaluateLocal(baselineFindings(classification, events, ctx.profile));
 
-  if (inspection.errors.length > 0) {
+  if (errors.length > 0) {
     const unknownRiskDecision = baselineForClassification("UNKNOWN_RISK", ctx.profile);
     evaluation = addLocalFindings(
       evaluation,
-      inspection.errors.map((error) =>
+      errors.map((error) =>
         localFinding(
           "adapter-registry",
           "adapter-error",
@@ -287,6 +419,8 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   const blocked = decision === "deny";
   const reason = decision === "allow" ? "" : explain(evaluation);
 
+  const auditNotes = [...(events.length > 1 ? events.map(describeEvent) : []), ...notes];
+
   let audited = false;
   if (ctx.auditEnabled) {
     const event = primaryEvent(events, localDecision, ctx.profile);
@@ -311,7 +445,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
             ...(event.version === undefined ? {} : { version: event.version }),
           }),
       ...(approval === undefined ? {} : { approval }),
-      ...(events.length > 1 ? { notes: events.map(describeEvent) } : {}),
+      ...(auditNotes.length === 0 ? {} : { notes: auditNotes }),
     };
 
     try {
@@ -334,5 +468,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     ...(approval === undefined ? {} : { approval }),
     audited,
     warnings,
+    manifestSnapshot,
+    expectsManifestChange: inspection.expectsManifestChange,
   };
 }

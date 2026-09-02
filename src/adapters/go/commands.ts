@@ -88,9 +88,26 @@ export interface GoAnalysis {
   readonly operations: readonly GoOperation[];
   /** Non-secret explanations, e.g. why a command could not be read. */
   readonly notes: readonly string[];
+  /**
+   * True when the command is expected to rewrite go.mod/go.sum/go.work.
+   *
+   * Used by manifest reconciliation (SPEC 14.2) to tell a file change this
+   * command produced from one an editing tool made behind the gate's back.
+   * `go mod init` is the reason this is not simply "the call was a mutation":
+   * it writes a manifest that contains no third-party trust at all.
+   */
+  readonly writesManifests: boolean;
 }
 
-const IRRELEVANT: GoAnalysis = { classification: "SUPPLY_CHAIN_IRRELEVANT", operations: [], notes: [] };
+const IRRELEVANT: GoAnalysis = {
+  classification: "SUPPLY_CHAIN_IRRELEVANT",
+  operations: [],
+  notes: [],
+  writesManifests: false,
+};
+
+/** `go` subcommands that write go.mod, go.sum, go.work or the vendor tree. */
+const MANIFEST_WRITING_SUBCOMMANDS = new Set(["get", "mod", "work"]);
 
 /** Go subcommands that cannot introduce or fetch third-party code. */
 const INERT_SUBCOMMANDS = new Set(["version", "doc", "help", "fix", "clean", "tool", "bug"]);
@@ -427,6 +444,7 @@ export function analyzeCommand(command: string): GoAnalysis {
   const notes: string[] = [...parsed.notes];
   let sawGo = false;
   let capable = false;
+  let writesManifests = false;
 
   for (const simple of parsed.commands) {
     // A checksum bypass counts wherever it is set, even on a non-Go command:
@@ -443,6 +461,8 @@ export function analyzeCommand(command: string): GoAnalysis {
     const rest = simple.argv.slice(2);
 
     if (sub === undefined || INERT_SUBCOMMANDS.has(sub)) continue;
+
+    if (MANIFEST_WRITING_SUBCOMMANDS.has(sub)) writesManifests = true;
 
     if (sub === "get") operations.push(...analyzeGet(rest));
     else if (sub === "install") operations.push(...analyzeInstall(rest));
@@ -473,13 +493,15 @@ export function analyzeCommand(command: string): GoAnalysis {
       classification: "UNKNOWN_RISK",
       operations,
       notes,
+      // An unreadable command is not a licence to rewrite manifests unnoticed.
+      writesManifests: false,
     };
   }
 
   if (operations.length === 0) {
     return capable
-      ? { classification: "THIRD_PARTY_CAPABLE", operations, notes }
-      : { ...IRRELEVANT, notes };
+      ? { classification: "THIRD_PARTY_CAPABLE", operations, notes, writesManifests }
+      : { ...IRRELEVANT, notes, writesManifests };
   }
 
   const mutation = operations.some((op) => op.classification === "THIRD_PARTY_MUTATION");
@@ -487,5 +509,6 @@ export function analyzeCommand(command: string): GoAnalysis {
     classification: mutation ? "THIRD_PARTY_MUTATION" : "THIRD_PARTY_CAPABLE",
     operations,
     notes,
+    writesManifests,
   };
 }

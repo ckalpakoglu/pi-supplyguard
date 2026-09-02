@@ -138,7 +138,13 @@ export function redact(value: unknown, depth = 0): unknown {
   return undefined;
 }
 
-export const AUDIT_RECORD_KINDS = ["tool-call", "config", "command"] as const;
+export const AUDIT_RECORD_KINDS = [
+  "tool-call",
+  "config",
+  "command",
+  // An ask-once project question and how it was answered (SPEC 9.2, 13.3).
+  "project-decision",
+] as const;
 
 export type AuditRecordKind = (typeof AUDIT_RECORD_KINDS)[number];
 

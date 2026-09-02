@@ -5,9 +5,13 @@
  * Policy lives in `src/core`, ecosystem knowledge lives in `src/adapters`.
  *
  * M1 established `tool_call` interception, configuration, profiles, decisions,
- * audit and UI. M2 registers the first ecosystem adapter (Go), so Go command
- * operations now produce real supply-chain events and are gated. Everything
- * else still resolves to ALLOW: ordinary development is unaffected.
+ * audit and UI. M2 registered the first ecosystem adapter (Go), so Go command
+ * operations produce real supply-chain events and are gated. M3 adds the state
+ * this layer has to own for manifest reconciliation (SPEC 14): the
+ * sensitive-file baseline each repository was last seen in, whether the
+ * previous call was allowed to change it, and the persisted answers to
+ * ask-once project questions (SPEC 9.2). Everything else still resolves to
+ * ALLOW: ordinary development is unaffected.
  *
  * KNOWN BYPASS VECTOR (documented, not fixed in M1)
  * -------------------------------------------------
@@ -46,8 +50,14 @@ import {
   type PathEnvironment,
   type SupplyGuardPaths,
 } from "./core/config.ts";
-import { evaluateToolCall, type EngineContext } from "./core/engine.ts";
+import {
+  evaluateToolCall,
+  type EngineContext,
+  type ProjectDecisionResolver,
+  type ResolvedProjectDecision,
+} from "./core/engine.ts";
 import type { NormalizedToolCall } from "./core/events.ts";
+import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
   parseProfile,
@@ -55,7 +65,13 @@ import {
   PROFILES,
   type Profile,
 } from "./core/profiles.ts";
-import { loadState, saveState, setProjectState } from "./core/state.ts";
+import {
+  getProjectDecisions,
+  loadState,
+  saveState,
+  setProjectDecision,
+  setProjectState,
+} from "./core/state.ts";
 
 export interface RuntimeOptions {
   /** Defaults to the production registry. Tests inject their own. */
@@ -83,6 +99,25 @@ interface ProjectContext {
   readonly loaded: LoadedConfig;
   readonly loadedAt: number;
   readonly branch?: string;
+}
+
+/**
+ * What SupplyGuard remembers about a repository for the length of a session.
+ *
+ * The manifest baseline is deliberately NOT persisted across sessions. A
+ * snapshot from a previous session would turn every commit, branch switch and
+ * editor save made while Pi was not running into an "unapproved mutation" on
+ * the next start. SupplyGuard reports what it observed while it was watching
+ * (see `docs/KNOWN-GAPS.md`).
+ */
+interface RepoSession {
+  baseline?: ManifestSnapshot;
+  /** The previous call was allowed and legitimately rewrites tracked files. */
+  expectManifestChange: boolean;
+  /** Project questions already put to this human in this session. */
+  readonly asked: Set<string>;
+  /** Answers read from durable state, cached so every call does not re-read it. */
+  stored?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -152,7 +187,16 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   const registry = options.registry ?? createAdapterRegistry([createGoAdapter()]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
+  const sessions = new Map<string, RepoSession>();
   const configWarningsAnnounced = new Set<string>();
+
+  function repoSession(repoRoot: string): RepoSession {
+    const existing = sessions.get(repoRoot);
+    if (existing !== undefined) return existing;
+    const created: RepoSession = { expectManifestChange: false, asked: new Set() };
+    sessions.set(repoRoot, created);
+    return created;
+  }
 
   /** Session-scoped tightening (SPEC 8.2 "scoped runtime decision"). */
   let sessionFloor: Profile | undefined;
@@ -246,6 +290,101 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     }
   }
 
+  /**
+   * Resolve one ask-once project question (SPEC 9.2, 13.3).
+   *
+   * Order: a stored human answer wins; otherwise a headless session takes the
+   * request's conservative value WITHOUT persisting it; otherwise the human is
+   * asked once per session and an explicit answer is persisted and audited.
+   *
+   * SECURITY: a dismissed or timed-out prompt is `unanswered`, never a value.
+   * The adapter then falls back to its own conservative default, exactly as it
+   * would before anyone was asked.
+   */
+  function projectDecisionResolver(
+    project: ProjectContext,
+    ctx: ExtensionContext,
+  ): ProjectDecisionResolver {
+    return async (request) => {
+      const session = repoSession(project.repoRoot);
+      const state = await loadState(project.paths.state);
+      if (session.stored === undefined) {
+        session.stored = Object.fromEntries(
+          Object.entries(getProjectDecisions(state, project.repoRoot)).map(
+            ([id, decision]) => [id, decision.value],
+          ),
+        );
+      }
+      const stored = session.stored[request.id];
+      // A remembered answer is not news: it is recorded in the audit log of the
+      // call where the human gave it, and repeating it on every later call
+      // would bury the records that matter.
+      if (stored !== undefined) return { value: stored, source: "stored" };
+
+      if (!ctx.hasUI) {
+        // SPEC 13.3 / 9.3: headless sessions are not asked and are not
+        // silently answered on a human's behalf; the choice is audited.
+        return {
+          value: request.headlessValue,
+          source: "headless-default",
+          note: request.headlessNote,
+        };
+      }
+
+      if (session.asked.has(request.id)) {
+        return { source: "unanswered", note: `${request.id}: already asked this session` };
+      }
+      session.asked.add(request.id);
+
+      let answer: string | undefined;
+      try {
+        answer = await ctx.ui.select(
+          request.question,
+          request.options.map((option) => option.label),
+        );
+      } catch {
+        answer = undefined;
+      }
+
+      const chosen = request.options.find((option) => option.label === answer);
+      if (chosen === undefined) {
+        return {
+          source: "unanswered",
+          note: `${request.id}: not answered; the conservative default applies`,
+        };
+      }
+
+      const decidedAt = now().toISOString();
+      session.stored = { ...session.stored, [request.id]: chosen.value };
+      try {
+        await saveState(
+          project.paths.state,
+          setProjectDecision(state, project.repoRoot, request.id, {
+            value: chosen.value,
+            decidedAt,
+          }),
+        );
+      } catch {
+        // Failing to remember an answer means asking again next session. It
+        // never grants trust, so it must not break the call.
+      }
+
+      await writeAudit(project, {
+        timestamp: decidedAt,
+        kind: "project-decision",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: false,
+        message: `project decision ${request.id} = ${chosen.value}`,
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+
+      const resolved: ResolvedProjectDecision = { value: chosen.value, source: "human" };
+      return resolved;
+    };
+  }
+
   /** The real tool-call path. Wrapped by `onToolCall`, which fails closed. */
   async function handleToolCall(
     event: ToolCallEvent,
@@ -255,6 +394,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     await announceConfigWarnings(project, ctx);
 
     const profile = effective(project);
+    const session = repoSession(project.repoRoot);
     const engineCtx: EngineContext = {
       repoRoot: project.repoRoot,
       sessionId: ctx.sessionManager.getSessionId(),
@@ -265,10 +405,19 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       audit: auditSink(project),
       auditEnabled: project.loaded.config.auditEnabled,
       now,
+      resolveProjectDecision: projectDecisionResolver(project, ctx),
+      manifestChangeExpected: session.expectManifestChange,
+      ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
     };
 
     const outcome = await evaluateToolCall(normalizeToolCall(event), engineCtx);
+
+    // SPEC 14.2: the baseline advances only when the observed state was
+    // accepted. After a DENY it stays put, so the rejected mutation is
+    // reconciled again on the next call instead of being inherited as clean.
+    if (!outcome.blocked) session.baseline = outcome.manifestSnapshot;
+    session.expectManifestChange = !outcome.blocked && outcome.expectsManifestChange;
 
     for (const warning of outcome.warnings) {
       notify(ctx, `SupplyGuard: ${warning}`, "warning");
@@ -326,6 +475,18 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       const project = await projectContext(ctx.cwd);
       const config = project.loaded.config;
       const profile = effective(project);
+      const session = repoSession(project.repoRoot);
+      const state = await loadState(project.paths.state);
+      const decisions = Object.fromEntries(
+        Object.entries(getProjectDecisions(state, project.repoRoot)).map(
+          ([id, decision]) => [id, decision.value],
+        ),
+      );
+      const ecosystemState = await registry.describe({
+        repoRoot: project.repoRoot,
+        profile,
+        decisions,
+      });
 
       const sources = project.loaded.sources
         .map((source) =>
@@ -354,11 +515,28 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           registry.size() === 0 ? " (none)" : ` (${adapters})`
         }`,
         `  Release cooldown     ${config.releaseAgeMinimumDays} days (enforced from M4)`,
+        `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
+        `  Manifest baseline    ${
+          session.baseline === undefined
+            ? "not established yet (set on the first tool call)"
+            : "established for this session"
+        }`,
+        `  Ecosystem state`,
+        ...(ecosystemState.length === 0
+          ? ["    none reported"]
+          : ecosystemState.map((line) => `    ${line}`)),
+        `  Project decisions    ${
+          Object.entries(decisions)
+            .map(([id, value]) => `${id}=${value}`)
+            .join(", ") || "none recorded"
+        }`,
         `  Audit                ${config.auditEnabled ? "enabled" : "disabled"}  ${project.paths.audit}`,
         `  Local state          ${project.paths.state}`,
         `  Session              ${ctx.hasUI ? "interactive" : "headless"} (${ctx.mode})`,
-        `  Enforcement          Go command gate active (M2). Manifest`,
-        `                       reconciliation and vendor state arrive in M3.`,
+        `  Enforcement          Go command gate (M2) and manifest reconciliation`,
+        `                       plus vendor state (M3) active. Release cooldown,`,
+        `                       identity, vulnerability and Socket checks arrive`,
+        `                       in M4-M7.`,
       ];
 
       if (project.loaded.warnings.length > 0) {
