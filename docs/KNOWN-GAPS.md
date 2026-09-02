@@ -1,7 +1,7 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M6 and M8 complete. M7 complete for scans and provider health;
-Socket Firewall deliberately not implemented (§1.5). M9 not started.
+**Status:** M1–M6, M8 and M9 complete. M7 complete for scans and provider
+health; Socket Firewall deliberately not implemented (§1.5).
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -56,20 +56,30 @@ dispatches a batch of tool calls whose hooks all fire before any of them
 executes, the expectation is whatever the last hook in the batch set — which is
 conservative unless that last call is itself a manifest-writing Go command.
 
-**A change made and reverted inside ONE tool call is invisible.** Reconciliation
-compares states, not history:
+**A change made and reverted inside ONE tool call leaves nothing to
+reconcile** — reconciliation compares states, not history. M9 narrowed this
+from the other end: a command that can be READ as writing a tracked manifest is
+now gated *before* it runs, so
 
 ```text
 sed -i s/v1.2.3/v9.9.9/ go.mod && go build ./... && git checkout go.mod
 ```
 
-leaves `go.mod` byte-identical, so the next snapshot matches and nothing is
-reported — while the build ran against the unapproved version. No hook the host
-offers helps here: `tool_result` fires after the revert has already happened, so
-observing it would show the same clean state. Closing this needs either
-filesystem-level watching or a network-level control on the fetch itself
-(Socket Firewall, M7). Until then, a `THIRD_PARTY_CAPABLE` build in a repository
-an agent can also write to is not an admission boundary.
+never executes. Redirections (including into a heredoc), in-place editors,
+`cp`/`mv`/`tee`/`truncate` and `git checkout`/`restore` of a tracked path are
+all covered, through wrappers and nesting.
+
+What remains uncovered is the shape a command cannot be read for:
+
+```text
+python3 rewrite_gomod.py        # the write is inside the script
+./generated-tool                # so is this one
+```
+
+Those still rely on snapshot reconciliation, and so a script that substitutes
+and reverts within one tool call is still invisible. Closing THAT needs
+filesystem-level watching or a network-level control on the fetch (Socket
+Firewall, which §1.5 records as not implemented).
 
 ### 1.2 A rejected manifest state blocks every later call until it is reverted
 
@@ -234,11 +244,16 @@ A tracked file larger than 4 MiB (`MAX_TRACKED_BYTES`) is hashed but not
 retained, so a change to it is reported as an unclassifiable manifest mutation.
 It is still gated; it just cannot be explained.
 
-Vendored **source** is not tracked at all — only `vendor/modules.txt`. That
-matches SPEC §14.1, but it is worth saying plainly: with vendoring enforced the
-build compiles from `vendor/`, and editing a vendored `.go` file changes nothing
-SupplyGuard watches. Hashing a whole vendor tree on every tool call is not the
-answer; noticing it is M9's problem.
+Vendored **source** is not tracked, only `vendor/modules.txt`, which is what
+SPEC §14.1 lists. With vendoring enforced the build compiles from `vendor/`, so
+editing a vendored `.go` file changes nothing the snapshot watches. M9 covers
+the command shapes — `sed -i vendor/…` and friends are gated like any other
+write to a tracked path only if the path is tracked, and individual vendored
+sources are not — so an editor aimed at vendored source is still unseen.
+
+Hashing a whole vendor tree on every tool call is the obvious fix and a bad
+one: thousands of files per call, to catch a case an attacker reaches only
+after already having write access to the repository.
 
 ### 1.9 `go generate` is treated as merely capable
 
@@ -264,7 +279,11 @@ therefore rewrite a command SupplyGuard has already approved.
 SupplyGuard never rewrites tool input itself — it only allows or blocks — but it
 cannot defend against a later handler that does.
 
-**Closed by:** M9, to the extent it can be. Documented in `src/index.ts`.
+**Not closable in this host.** The mitigation would be to compare the input
+SupplyGuard approved against the input the tool actually received, which the
+`tool_result` event does carry — but that event fires after execution and cannot
+block, so it would turn a silent bypass into an audited one, not a prevented
+one. Documented in `src/index.ts`.
 
 ### 1.11 The host API surface is hand-written and only spot-verified
 
@@ -561,6 +580,39 @@ A line that did not begin with a keyword was skipped instead of being pushed to
 `unparsed`, contradicting the parser's own contract and removing the backstop
 that makes unmodelled structure visible in a diff. Fixed.
 Pinned by *"an unreadable top-level line stays visible in unparsed"*.
+
+### D15 — a heredoc swallowed the redirection on its own line
+
+The tokenizer, on seeing `<<`, skipped straight to the heredoc delimiter — which
+also consumed the rest of that line, where the redirection lives:
+
+```text
+cat <<'EOF' > go.mod        ->  was: no write recorded
+module evil/replacement
+EOF
+```
+
+Harmless while redirections were discarded anyway; a live bypass the moment M9
+started gating writes to tracked manifests, and the most natural way to write a
+whole file from a shell. Fixed by scanning the remainder of the line for
+redirections before skipping the body.
+Pinned by *"a heredoc redirected into a manifest is a write"*; mutation-checked.
+
+### D16 — exempting `go` from the manifest-write gate opened a hole
+
+The write detector skipped commands whose tool was `go`, reasoning that the Go
+adapter already gates them. It does — for `go mod edit` and friends, which name
+no file operand and were never matched here anyway. What the exemption actually
+bought was a way through:
+
+```text
+go list -m all > go.sum     ->  was: not a write
+```
+
+Found by mutation testing: deleting the exemption broke no test, which is what
+prompted asking what it was for. Removed.
+Pinned by *"go's own subcommands are not matched, yet go is not a way
+through"*.
 
 ### D14 — pseudo-version ordering was inverted against its base tag
 

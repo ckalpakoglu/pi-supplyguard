@@ -54,7 +54,8 @@ config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
 complete, as are M4 (dependency justification, release cooldown, scoped
 one-shot overrides), M5 (identity protection), M6 (vulnerability metadata) and
-M7 (Socket CLI scans) and M8 (generic policies). Everything in
+M7 (Socket CLI scans), M8 (generic policies) and M9 (adversarial hardening).
+Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -87,6 +88,10 @@ Enforced now:
   command — is reconciled and audited instead of being asked about twice. Detection happens on the following tool
   call: Pi's hook runs before a tool executes, so the boundary is "the agent
   cannot keep working after an unapproved edit", not "the edit cannot happen".
+  A command that can be *read* as writing a tracked manifest — a redirection,
+  `sed -i`, `cp`/`mv`/`tee`, even `git checkout go.mod` — is gated **before** it
+  runs, which closes the substitute-build-revert sequence that leaves no trace
+  for a snapshot to find.
 - **Go vendor model:** an existing vendor tree is detected and, after a
   one-time question whose answer is persisted and audited, enforced —
   `vendor/modules.txt` that no longer matches `go.mod` is vendor drift (warn in
@@ -162,11 +167,10 @@ Not yet implemented (planned milestones M4–M9):
 
 - vulnerability, similarity and transitive-impact findings in the approval
   object (M5, M6);
-- adversarial hardening against bypasses such as hostile co-installed
-  extensions (M9).
-
-Until those land, treat the command gate as one control among several, not an
-admission boundary.
+What remains is documented in [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md):
+Socket Firewall and the Socket manifest scan, a manifest rewritten from inside
+a script rather than by a readable command, vendored source files, and a
+hostile co-installed extension.
 
 ## Installation
 

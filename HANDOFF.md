@@ -37,7 +37,7 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M6 | Vulnerability metadata: OSV, provider abstraction | Complete |
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Scans + health complete; Firewall out of scope by decision |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
-| M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | **Next** |
+| M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Complete |
 
 ## Layout
 
@@ -61,6 +61,7 @@ src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
 src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
 src/generic/            rules that belong to no ecosystem, registered as an adapter
+src/generic/sensitive-writes.ts  manifest writes gated BEFORE they land (M9)
 src/providers/socket/   the ONLY process SupplyGuard starts; env is allow-listed
 src/generic/shell.ts      shell parser shared by command analysis
 ```

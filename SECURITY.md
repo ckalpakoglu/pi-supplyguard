@@ -9,7 +9,8 @@ state, vendor detection and drift) and M4 (dependency justification, release
 cooldown, scoped one-shot overrides) and M8 (generic policies: installer
 pipelines, GitHub Actions pinning, network events) and M5 (identity protection)
 M6 (vulnerability metadata) and M7 (Socket CLI artifact scans) are complete.
-Socket Firewall is deliberately not implemented and M9 is not started. See
+and M9 (adversarial hardening) are complete. Socket Firewall is deliberately
+not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 

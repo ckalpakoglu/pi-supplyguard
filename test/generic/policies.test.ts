@@ -24,6 +24,9 @@ import { parseShell } from "../../src/generic/shell.ts";
 import type { SupplyChainEvent } from "../../src/core/events.ts";
 import { createRuntime } from "../../src/index.ts";
 
+/** The paths the production registry tracks (SPEC 14.1). */
+const WATCHED = ["go.mod", "go.sum", "go.work", "go.work.sum", "vendor/modules.txt"];
+
 const tempRoots: string[] = [];
 
 after(async () => {
@@ -35,7 +38,7 @@ const adapter = createGenericAdapter();
 function analyze(command: string): readonly SupplyChainEvent[] {
   const result = adapter.inspectToolCall(
     { toolName: "bash", input: { command } },
-    { repoRoot: "/repo", profile: "standard" },
+    { repoRoot: "/repo", profile: "standard", watchedPaths: WATCHED },
   );
   return (result as { events: readonly SupplyChainEvent[] }).events;
 }
@@ -203,7 +206,13 @@ async function mutationEvents(
   mutation: Parameters<NonNullable<typeof adapter.inspectFileMutation>>[0],
   profile: "standard" | "hardened" | "paranoid",
 ): Promise<readonly SupplyChainEvent[]> {
-  return (await adapter.inspectFileMutation?.(mutation, { repoRoot: "/repo", profile })) ?? [];
+  return (
+    (await adapter.inspectFileMutation?.(mutation, {
+      repoRoot: "/repo",
+      profile,
+      watchedPaths: WATCHED,
+    })) ?? []
+  );
 }
 
 test("only newly introduced mutable references are reported on a change", async () => {

@@ -28,6 +28,7 @@ import {
   inspectInstallers,
   inspectNetworkFetches,
 } from "./installers.ts";
+import { inspectSensitiveWrites } from "./sensitive-writes.ts";
 import { parseShell } from "./shell.ts";
 
 function shellCommand(call: NormalizedToolCall): string | undefined {
@@ -42,7 +43,7 @@ export function createGenericAdapter(): EcosystemAdapter {
     /** SPEC 14.1 lists workflow hashes in the snapshot set. */
     sensitivePaths: () => WORKFLOW_GLOBS,
 
-    inspectToolCall(call: NormalizedToolCall, _ctx: AdapterContext): AdapterToolCallResult {
+    inspectToolCall(call: NormalizedToolCall, ctx: AdapterContext): AdapterToolCallResult {
       const command = shellCommand(call);
       if (command === undefined) {
         return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
@@ -50,8 +51,10 @@ export function createGenericAdapter(): EcosystemAdapter {
 
       const parsed = parseShell(command);
       const pipelines = inspectInstallers(parsed.commands);
+      const writes = inspectSensitiveWrites(parsed.commands, ctx.watchedPaths);
       const events = [
         ...pipelines,
+        ...writes,
         ...inspectNetworkFetches(parsed.commands, pipelines.length),
       ];
 
@@ -63,7 +66,10 @@ export function createGenericAdapter(): EcosystemAdapter {
       }
 
       return {
-        classification: pipelines.length > 0 ? "THIRD_PARTY_MUTATION" : "THIRD_PARTY_CAPABLE",
+        classification:
+          pipelines.length > 0 || writes.length > 0
+            ? "THIRD_PARTY_MUTATION"
+            : "THIRD_PARTY_CAPABLE",
         events,
       };
     },

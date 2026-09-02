@@ -15,6 +15,9 @@ import type { AuditRecord } from "../../src/core/audit.ts";
 import { evaluateToolCall, type EngineContext } from "../../src/core/engine.ts";
 import type { Profile } from "../../src/core/profiles.ts";
 
+/** The paths the production registry tracks (SPEC 14.1). */
+const WATCHED = ["go.mod", "go.sum", "go.work", "go.work.sum", "vendor/modules.txt"];
+
 interface Harness {
   readonly ctx: EngineContext;
   readonly audited: AuditRecord[];
@@ -208,7 +211,7 @@ test("an adapter floor tightens a baseline but never loosens one", async () => {
 test("an unreadable command carries its reason through to the caller", async () => {
   const result = await createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } }).inspectToolCall(
     { toolName: "bash", input: { command: "sudo -u root go get foo@latest" } },
-    { repoRoot: "/repo", profile: "standard" },
+    { repoRoot: "/repo", profile: "standard", watchedPaths: WATCHED },
   );
 
   assert.equal(result.classification, "UNKNOWN_RISK");
@@ -219,7 +222,7 @@ test("an unreadable command carries its reason through to the caller", async () 
 // Reconciliation must be able to tell a manifest this command was approved to
 // write from one an editing tool rewrote behind the gate's back.
 test("only manifest-writing go commands announce an expected manifest change", async () => {
-  const ctx = { repoRoot: "/repo", profile: "standard" as const };
+  const ctx = { repoRoot: "/repo", profile: "standard" as const, watchedPaths: WATCHED };
   const expects = async (command: string) =>
     (
       await createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } }).inspectToolCall(

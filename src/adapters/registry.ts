@@ -25,6 +25,14 @@ import type { VulnerabilityLookup } from "../core/vulnerability.ts";
 export interface AdapterContext {
   readonly repoRoot: string;
   readonly profile: Profile;
+  /**
+   * Every path any adapter tracks, repository-relative (SPEC 14.1).
+   *
+   * The generic layer needs the whole set, not its own: `sed -i go.mod` is a
+   * generic command writing a Go manifest, and neither adapter alone can see
+   * both halves of that.
+   */
+  readonly watchedPaths: readonly string[];
 }
 
 /**

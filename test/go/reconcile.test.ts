@@ -16,6 +16,9 @@ import { createGoAdapter, VENDOR_MODE_DECISION, VENDOR_OPTIONAL } from "../../sr
 import type { SupplyChainEvent } from "../../src/core/events.ts";
 import type { FileMutation } from "../../src/core/manifest.ts";
 
+/** The paths the production registry tracks (SPEC 14.1). */
+const WATCHED = ["go.mod", "go.sum", "go.work", "go.work.sum", "vendor/modules.txt"];
+
 // No test reaches the network.
 const adapter = createGoAdapter({ env: { GOPROXY: "off" } }, { env: { GOPROXY: "off" } });
 
@@ -38,7 +41,7 @@ function mutation(before: string | undefined, after: string | undefined, path = 
 }
 
 function inspect(m: FileMutation): readonly SupplyChainEvent[] {
-  const events = adapter.inspectFileMutation?.(m, { repoRoot: "/repo", profile: "standard" });
+  const events = adapter.inspectFileMutation?.(m, { repoRoot: "/repo", profile: "standard", watchedPaths: WATCHED });
   assert.ok(events !== undefined, "the Go adapter must classify file mutations");
   return events as readonly SupplyChainEvent[];
 }
@@ -156,7 +159,12 @@ test("deleting go.mod is reported rather than read as an empty manifest", () => 
 // ---------------------------------------------------------------------------
 
 test("the vendor question is asked once, and never in paranoid", async () => {
-  const withVendor = { repoRoot: process.cwd(), profile: "standard" as const, decisions: {} };
+  const withVendor = {
+    repoRoot: process.cwd(),
+    profile: "standard" as const,
+    watchedPaths: WATCHED,
+    decisions: {},
+  };
 
   // This repository has no vendor tree, so there is nothing to keep enforcing.
   assert.deepEqual(await adapter.projectDecisions?.(withVendor), []);
@@ -215,6 +223,7 @@ async function projectState(
   const result = await adapter.inspectProjectState?.({
     repoRoot,
     profile,
+    watchedPaths: WATCHED,
     decisions: options.decisions ?? {},
     classification: options.classification ?? "THIRD_PARTY_CAPABLE",
     events: options.events ?? [],
@@ -228,6 +237,7 @@ test("an existing vendor tree is asked about once, per SPEC 9.2", async () => {
   const requests = await adapter.projectDecisions?.({
     repoRoot: repo,
     profile: "standard",
+    watchedPaths: WATCHED,
     decisions: {},
   });
   assert.equal(requests?.length, 1);
@@ -307,6 +317,11 @@ test("a repository with no Go project reports nothing", async () => {
 
 test("status lines describe the vendor state without leaking paths", async () => {
   const repo = await repoWith(VENDORED);
-  const lines = await adapter.describe?.({ repoRoot: repo, profile: "standard", decisions: {} });
+  const lines = await adapter.describe?.({
+    repoRoot: repo,
+    profile: "standard",
+    watchedPaths: WATCHED,
+    decisions: {},
+  });
   assert.ok(lines?.some((line) => line.includes("vendor current")), lines?.join("\n"));
 });

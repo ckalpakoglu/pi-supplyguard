@@ -45,6 +45,14 @@ export interface SimpleCommand {
   readonly assignments: readonly ShellAssignment[];
   readonly argv: readonly ShellWord[];
   /**
+   * Files this command redirects OUTPUT into, e.g. `> go.mod`, `>> go.sum`.
+   *
+   * Recorded because a redirection is a write, and a write to a manifest is a
+   * dependency change however plainly it is spelled. `echo … > go.mod` names no
+   * tool SupplyGuard would otherwise recognize.
+   */
+  readonly writes?: readonly string[];
+  /**
    * The operator that preceded this command, e.g. `"|"` or `"&&"`; absent for
    * the first command in a list.
    *
@@ -108,7 +116,7 @@ export function commandName(word: string): string {
 }
 
 interface Token {
-  readonly kind: "word" | "op";
+  readonly kind: "word" | "op" | "redirect";
   readonly text: string;
   readonly expanded: boolean;
 }
@@ -153,7 +161,7 @@ function tokenize(input: string): TokenizeResult {
     tokens.push({ kind: "op", text, expanded: false });
   };
 
-  /** Consume a redirection and its target, emitting nothing. */
+  /** Consume a redirection, recording an output target. */
   const consumeRedirect = (): void => {
     // A leading file-descriptor number belongs to the redirection, not to the
     // command: `go build 2>/dev/null` must not gain an argument "2".
@@ -163,6 +171,9 @@ function tokenize(input: string): TokenizeResult {
       expanded = false;
     }
     const heredoc = input.startsWith("<<", i) && !input.startsWith("<<<", i);
+    // `>` and `>>` write; `<` reads. A heredoc reads, even though it starts
+    // with `<<`, and `&>`/`>&` write to a file or a descriptor.
+    const writing = !heredoc && input.charAt(i) !== "<";
     while (i < input.length && "<>&".includes(input.charAt(i))) i += 1;
     while (i < input.length && isBlank(input.charAt(i))) i += 1;
 
@@ -172,7 +183,24 @@ function tokenize(input: string): TokenizeResult {
       i += 1;
     }
 
+    if (writing && target !== "" && !/^\d+$/.test(target)) {
+      tokens.push({ kind: "redirect", text: target, expanded: false });
+    }
+
     if (heredoc) {
+      // The rest of THIS line still belongs to the command, and it is where the
+      // redirection lives in `cat <<'EOF' > go.mod`. Skipping straight to the
+      // delimiter would swallow it, and a heredoc written into a manifest is a
+      // manifest write like any other.
+      const lineEnd = input.indexOf("\n", i);
+      const line = input.slice(i, lineEnd === -1 ? input.length : lineEnd);
+      for (const match of line.matchAll(/>>?\s*([^\s<>|&;()]+)/g)) {
+        const written = match[1];
+        if (written !== undefined && written !== "" && !/^\d+$/.test(written)) {
+          tokens.push({ kind: "redirect", text: written, expanded: false });
+        }
+      }
+
       // Skip to the line that consists of the delimiter, so the body is not
       // mistaken for commands.
       const delimiter = target.replace(/['"]/g, "").trim();
@@ -337,20 +365,34 @@ interface Segment {
   readonly words: ShellWord[];
   /** The operator immediately before this segment, when there was one. */
   readonly precededBy?: string;
+  readonly writes: string[];
 }
 
 function split(tokens: readonly Token[]): Segment[] {
   const out: Segment[] = [];
   let current: ShellWord[] = [];
+  let writes: string[] = [];
   let pending: string | undefined;
   let next: string | undefined;
 
+  const flushSegment = (): void => {
+    if (current.length === 0 && writes.length === 0) return;
+    out.push({
+      words: current,
+      writes,
+      ...(pending === undefined ? {} : { precededBy: pending }),
+    });
+    current = [];
+    writes = [];
+  };
+
   for (const token of tokens) {
+    if (token.kind === "redirect") {
+      writes.push(token.text);
+      continue;
+    }
     if (token.kind === "op") {
-      if (current.length > 0) {
-        out.push(pending === undefined ? { words: current } : { words: current, precededBy: pending });
-        current = [];
-      }
+      flushSegment();
       // Grouping punctuation does not describe a data connection between two
       // commands, so it must not be mistaken for one.
       pending = token.text === "(" || token.text === ")" || token.text === "{" || token.text === "}"
@@ -361,9 +403,7 @@ function split(tokens: readonly Token[]): Segment[] {
     }
     current.push({ text: token.text, expanded: token.expanded });
   }
-  if (current.length > 0) {
-    out.push(pending === undefined ? { words: current } : { words: current, precededBy: pending });
-  }
+  flushSegment();
   return out;
 }
 
@@ -536,11 +576,11 @@ export function parseShell(command: string, depth = 0): ShellParse {
     if (result.opaque) opaque = true;
     notes.push(...result.notes);
     if (result.command !== undefined) {
-      commands.push(
-        segment.precededBy === undefined
-          ? result.command
-          : { ...result.command, precededBy: segment.precededBy },
-      );
+      commands.push({
+        ...result.command,
+        ...(segment.precededBy === undefined ? {} : { precededBy: segment.precededBy }),
+        ...(segment.writes.length === 0 ? {} : { writes: segment.writes }),
+      });
     }
 
     for (const script of result.nested) {

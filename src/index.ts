@@ -631,6 +631,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         repoRoot: project.repoRoot,
         profile,
         decisions,
+        watchedPaths: registry.sensitivePaths(),
       });
 
       const sources = project.loaded.sources
