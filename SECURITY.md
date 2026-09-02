@@ -6,8 +6,9 @@
 (Pi skeleton: tool-call hook, configuration, profiles, decisions, audit),
 M2 (Go command gate) and M3 (manifest engine: snapshots, semantic `go.mod`
 state, vendor detection and drift) and M4 (dependency justification, release
-cooldown, scoped one-shot overrides) are complete. M5–M9 are not implemented.
-See
+cooldown, scoped one-shot overrides) and M8 (generic policies: installer
+pipelines, GitHub Actions pinning, network events) are complete. M5, M6, M7 and
+M9 are not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -82,8 +83,10 @@ Specific limits of the current implementation (details in
   consumption (M5).
 - No vulnerability intelligence such as OSV (M6).
 - No Socket scans, Socket Firewall or provider health checks (M7).
-- Generic policies are not implemented: `curl | sh` / `wget | sh` pipelines
-  and mutable GitHub Actions references are **not** blocked yet (M8).
+- Generic policy stops where SPEC §15 stops: a download and its execution in
+  two separate steps is a network event rather than a pipeline, container image
+  digests are not pinned, and mutable action references already committed are
+  reported rather than gated.
 - The Pi host does not re-validate tool input after a handler approves it: a
   hostile co-installed extension could rewrite an approved command
   (documented; tracked for M9). SupplyGuard itself never rewrites tool input.
@@ -130,7 +133,8 @@ Trust boundaries:
 | Typosquatting / reposquatting / trust corpus | Not yet enforced (M5) |
 | Vulnerability metadata (OSV) | Not yet enforced (M6) |
 | Socket scans / Firewall / provider health | Not yet enforced (M7) |
-| `curl \| sh` / `wget \| sh`; GitHub Actions SHA pinning | Not yet enforced (M8) |
+| `curl \| sh` / `wget \| sh` denial, in every profile | **Enforced** (M8) |
+| GitHub Actions full-SHA pinning; network events | **Enforced** (M8) |
 | Adversarial hardening (hostile extensions, bypass corpus) | Not yet enforced (M9) |
 
 ## Supply-chain policy for this project itself

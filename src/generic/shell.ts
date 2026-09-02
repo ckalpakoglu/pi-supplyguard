@@ -44,6 +44,16 @@ export interface ShellAssignment {
 export interface SimpleCommand {
   readonly assignments: readonly ShellAssignment[];
   readonly argv: readonly ShellWord[];
+  /**
+   * The operator that preceded this command, e.g. `"|"` or `"&&"`; absent for
+   * the first command in a list.
+   *
+   * Load-bearing for installer-pipeline policy (SPEC 15.2): `curl … | sh` runs
+   * whatever the server sends, while `curl … ; sh script.sh` runs a file that
+   * is at least on disk to be read. Without the operator the two are the same
+   * pair of commands.
+   */
+  readonly precededBy?: string;
 }
 
 export interface ShellParse {
@@ -323,19 +333,37 @@ function tokenize(input: string): TokenizeResult {
 }
 
 /** Split a token stream into simple commands at separator operators. */
-function split(tokens: readonly Token[]): ShellWord[][] {
-  const out: ShellWord[][] = [];
+interface Segment {
+  readonly words: ShellWord[];
+  /** The operator immediately before this segment, when there was one. */
+  readonly precededBy?: string;
+}
+
+function split(tokens: readonly Token[]): Segment[] {
+  const out: Segment[] = [];
   let current: ShellWord[] = [];
+  let pending: string | undefined;
+  let next: string | undefined;
 
   for (const token of tokens) {
     if (token.kind === "op") {
-      if (current.length > 0) out.push(current);
-      current = [];
+      if (current.length > 0) {
+        out.push(pending === undefined ? { words: current } : { words: current, precededBy: pending });
+        current = [];
+      }
+      // Grouping punctuation does not describe a data connection between two
+      // commands, so it must not be mistaken for one.
+      pending = token.text === "(" || token.text === ")" || token.text === "{" || token.text === "}"
+        ? next
+        : token.text;
+      next = pending;
       continue;
     }
     current.push({ text: token.text, expanded: token.expanded });
   }
-  if (current.length > 0) out.push(current);
+  if (current.length > 0) {
+    out.push(pending === undefined ? { words: current } : { words: current, precededBy: pending });
+  }
   return out;
 }
 
@@ -503,11 +531,17 @@ export function parseShell(command: string, depth = 0): ShellParse {
   const notes: string[] = [...tokenized.notes];
   let opaque = tokenized.opaque;
 
-  for (const words of split(tokenized.tokens)) {
-    const result = unwrap(words);
+  for (const segment of split(tokenized.tokens)) {
+    const result = unwrap(segment.words);
     if (result.opaque) opaque = true;
     notes.push(...result.notes);
-    if (result.command !== undefined) commands.push(result.command);
+    if (result.command !== undefined) {
+      commands.push(
+        segment.precededBy === undefined
+          ? result.command
+          : { ...result.command, precededBy: segment.precededBy },
+      );
+    }
 
     for (const script of result.nested) {
       const inner = parseShell(script, depth + 1);

@@ -14,7 +14,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 
 /**
@@ -79,6 +79,44 @@ function safeJoin(repoRoot: string, relPath: string): string | undefined {
 }
 
 /**
+ * Expand a watched path that names a set of files.
+ *
+ * One `*` in the FINAL segment only: `.github/workflows/*.yml` is the shape
+ * SPEC 14.1 needs, and a general glob engine would be a lot of surface for one
+ * caller. A directory that cannot be listed expands to nothing, which the
+ * snapshot then records as absent rather than as unchanged.
+ */
+async function expandGlob(repoRoot: string, pattern: string): Promise<readonly string[]> {
+  const slash = pattern.lastIndexOf("/");
+  const dir = slash === -1 ? "" : pattern.slice(0, slash);
+  const file = pattern.slice(slash + 1);
+  if (dir.includes("*")) return [];
+
+  const full = safeJoin(repoRoot, dir === "" ? "." : dir);
+  if (full === undefined && dir !== "") return [];
+
+  const suffix = file.slice(file.indexOf("*") + 1);
+  const prefix = file.slice(0, file.indexOf("*"));
+
+  let entries: string[];
+  try {
+    entries = await readdir(full ?? repoRoot);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter(
+      (entry) =>
+        entry.length >= prefix.length + suffix.length &&
+        entry.startsWith(prefix) &&
+        entry.endsWith(suffix),
+    )
+    .map((entry) => (dir === "" ? entry : `${dir}/${entry}`))
+    .sort();
+}
+
+/**
  * Read the current state of every watched path.
  *
  * An unreadable file (permissions, a directory in its place) is recorded as
@@ -92,8 +130,17 @@ export async function readManifestSnapshot(
 ): Promise<ManifestSnapshot> {
   const snapshot: Record<string, ManifestFile | null> = {};
 
+  // A glob describes a SET of files, so an entry that has disappeared has to
+  // stay in the snapshot as absent; otherwise deleting a workflow would read as
+  // "nothing here to compare" instead of as a change.
+  const expanded: string[] = [];
+  for (const pattern of paths) {
+    if (pattern.includes("*")) expanded.push(...(await expandGlob(repoRoot, pattern)));
+    else expanded.push(pattern);
+  }
+
   await Promise.all(
-    paths.map(async (relPath) => {
+    [...new Set(expanded)].map(async (relPath) => {
       const full = safeJoin(repoRoot, relPath);
       if (full === undefined) return;
 

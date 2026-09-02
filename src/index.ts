@@ -38,6 +38,7 @@ import type {
 import { createGoAdapter } from "./adapters/go/index.ts";
 import type { ProxyOptions } from "./adapters/go/proxy.ts";
 import { createAdapterRegistry, type AdapterRegistry } from "./adapters/registry.ts";
+import { createGenericAdapter } from "./generic/index.ts";
 import type { ApprovalUi } from "./core/approval.ts";
 import {
   createAuditSink,
@@ -209,7 +210,8 @@ function notify(
 
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
   const registry =
-    options.registry ?? createAdapterRegistry([createGoAdapter(options.proxy ?? {})]);
+    options.registry ??
+    createAdapterRegistry([createGenericAdapter(), createGoAdapter(options.proxy ?? {})]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();

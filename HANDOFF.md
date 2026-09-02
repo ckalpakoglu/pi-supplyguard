@@ -36,7 +36,7 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | **Next** |
 | M6 | Vulnerability metadata: OSV, provider abstraction | Not started |
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Not started |
-| M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Not started |
+| M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
 | M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Not started |
 
 ## Layout
@@ -57,6 +57,7 @@ src/core/release-age.ts   the cooldown policy; the date comes from an adapter
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
 src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
+src/generic/            rules that belong to no ecosystem, registered as an adapter
 src/generic/shell.ts      shell parser shared by command analysis
 ```
 

@@ -52,8 +52,8 @@ control that overstates its coverage is worse than none. This section
 describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
 config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
-complete, as is M4 (dependency justification, release cooldown, scoped
-one-shot overrides). Everything in
+complete, as are M4 (dependency justification, release cooldown, scoped
+one-shot overrides) and M8 (generic policies). Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -113,6 +113,17 @@ Enforced now:
   version, for one execution, and is audited with its reason. Only the cooldown
   opts into being waivable — a floating version, a checksum bypass or a missing
   justification is never offered an override.
+- **Installer pipelines:** `curl … | sh`, `wget … | bash` and the same shape
+  piped into `python`, `node` or `perl` are denied in every profile — no
+  override lifts them (SPEC §15.2). Grouping (`| (sh)`) does not hide the pipe.
+  A download that is *not* executed is a different event, and piping fetched
+  data into a local script is ordinary work that stays free.
+- **GitHub Actions pinning:** `uses: actions/checkout@v4` is a mutable
+  reference — the tag can be repointed at any commit. Introducing one asks in
+  `standard` and is denied in `hardened` and `paranoid`; only a full
+  40-character commit SHA counts as pinned. Workflow files are part of the
+  manifest snapshot set, so a workflow rewritten by a script is caught the same
+  way `go.mod` is.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -127,8 +138,6 @@ Not yet implemented (planned milestones M4–M9):
 - typosquatting / repository-squatting analysis with a trust corpus (M5);
 - vulnerability metadata, e.g. OSV (M6);
 - Socket scans and Socket Firewall (M7);
-- generic policies: GitHub Actions SHA pinning and `curl | sh` / `wget | sh`
-  denial (M8);
 - adversarial hardening against bypasses such as hostile co-installed
   extensions (M9).
 
@@ -190,6 +199,9 @@ land):
 | The same, with no recorded justification | Deny | Deny | Deny |
 | Artifact published inside the release cooldown | Warn + Ask | Deny + override | Deny + override with a written reason |
 | Release date unavailable (proxy unreachable) | Warn | Warn | Deny, no override |
+| `curl \| sh` / `wget \| bash` installer pipeline | Deny | Deny | Deny |
+| Newly introduced mutable GitHub Actions reference | Ask | Deny | Deny |
+| Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |

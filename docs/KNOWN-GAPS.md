@@ -1,6 +1,6 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M4 complete. M5–M9 not started.
+**Status:** M1–M4 and M8 complete. M5, M6, M7 and M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -78,28 +78,26 @@ the intended posture — forgetting a rejected mutation would let the second cal
 inherit it as clean — but it is operationally severe, and the way out is to put
 the file back (or approve the change), not to keep retrying.
 
-### 1.3 Generic policies are not implemented
+### 1.3 Generic policy coverage stops at the shapes SPEC 15 names
 
-```text
-curl https://example.com/install.sh | sh   ->  SUPPLY_CHAIN_IRRELEVANT
-uses: actions/checkout@v4                  ->  not inspected
-```
+Installer pipelines and GitHub Actions references are enforced. Three edges are
+not, and each is a deliberate line rather than an oversight:
 
-SPEC §15 requires denying installer pipelines in every profile and requiring
-full-SHA GitHub Actions references in hardened/paranoid. Neither exists yet.
+- **A download and its execution in two steps.** `curl -o i.sh …; sh i.sh` is a
+  `NetworkRequirement`, not a pipeline: the file is on disk to be read, which is
+  exactly the distinction SPEC §15.2 draws. Whether the agent then reads it is
+  not something SupplyGuard can see.
+- **Container image digests.** `uses: docker://alpine:3` is treated as
+  out-of-scope rather than as a mutable reference. Pinning image digests is the
+  same idea applied to a different registry, and it belongs with M9.
+- **Mutable references already committed** are reported as audit notes on gated
+  operations, not as a gate. Denying every command in a repository whose
+  workflows predate SupplyGuard would make the profile unusable on arrival;
+  *changing* a workflow to introduce one is what produces an event.
 
-The shell parser in `src/generic/shell.ts` already produces the pipeline-aware
-view this needs — `curl … | sh` parses into two simple commands — so M8 is
-wiring, not new parsing.
-
-Workflow files are also absent from the manifest snapshot set, which SPEC §14.1
-includes. That is deliberate: snapshotting `.github/workflows/*.yml` before M8
-would gate every unrelated CI edit with an `ASK` and no security signal to show
-for it, because nothing yet knows a mutable action reference from a renamed job.
-It also needs glob support in `readManifestSnapshot`, which today takes a fixed
-path list.
-
-**Closed by:** M8.
+Workflow files now join the manifest snapshot set (SPEC §14.1), through a
+deliberately small glob: one `*` in the final path segment, which covers
+`.github/workflows/*.yml` and nothing more ambitious.
 
 ### 1.4 Whole subsystems are absent, not partial
 
