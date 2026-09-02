@@ -141,6 +141,12 @@ otherwise trip: denying the only command that repairs the state would leave
 editing configuration as the sole way out, and SPEC §17.2 rules that out as an
 override. It still passes the normal gate on its own merits.
 
+The drift check itself is narrower than Go's own consistency check: it compares
+versions for every vendored module, and reports a vendored module `go.mod` no
+longer requires only when the tree marks it `## explicit`. A non-explicit
+leftover is not reported. Editing `vendor/modules.txt` is itself gated, so this
+is bounded, but it is not the same test `go build -mod=vendor` runs.
+
 ### 1.6 Non-`go.mod` manifests are classified coarsely
 
 `go.mod` gets a full semantic diff (add / upgrade / downgrade / remove /

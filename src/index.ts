@@ -307,12 +307,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   ): ProjectDecisionResolver {
     return async (request) => {
       const session = repoSession(project.repoRoot);
-      const state = await loadState(project.paths.state);
       if (session.stored === undefined) {
         session.stored = Object.fromEntries(
-          Object.entries(getProjectDecisions(state, project.repoRoot)).map(
-            ([id, decision]) => [id, decision.value],
-          ),
+          Object.entries(
+            getProjectDecisions(await loadState(project.paths.state), project.repoRoot),
+          ).map(([id, decision]) => [id, decision.value]),
         );
       }
       const stored = session.stored[request.id];
@@ -357,9 +356,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       const decidedAt = now().toISOString();
       session.stored = { ...session.stored, [request.id]: chosen.value };
       try {
+        // Re-read immediately before writing: another repository's answer may
+        // have landed in the same file since this session cached its view.
         await saveState(
           project.paths.state,
-          setProjectDecision(state, project.repoRoot, request.id, {
+          setProjectDecision(await loadState(project.paths.state), project.repoRoot, request.id, {
             value: chosen.value,
             decidedAt,
           }),
