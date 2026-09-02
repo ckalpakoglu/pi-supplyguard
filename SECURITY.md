@@ -124,5 +124,7 @@ Trust boundaries:
 
 `pi-supplyguard` holds itself to the standard it enforces: one pinned runtime
 dependency (`yaml@2.9.0`), exact-pinned dev dependencies, no floating
-versions, Node built-ins preferred, and human review required for any
+versions in `dependencies`/`devDependencies` (the optional host
+peerDependency is deliberately `*`, see KNOWN-GAPS §1.6), Node built-ins
+preferred, and human review required for any
 dependency change. See [`README.md`](README.md) and [`AGENTS.md`](AGENTS.md).

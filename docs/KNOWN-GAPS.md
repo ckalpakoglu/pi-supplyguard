@@ -287,14 +287,14 @@ mutation-checked.
 
 `package.json` is not publishable as it stands.
 
-- `files` lists `README.md`, `SECURITY.md` and `LICENSE`. **None of the three
-  exists.**
-- `license` is `Apache-2.0` with no `LICENSE` file to back it.
+- `files` lists `README.md`, `SECURITY.md` and `LICENSE`; all three now exist
+  (added by this branch) and `license: Apache-2.0` is backed by the `LICENSE`
+  file.
 - `peerDependencies` pins `@earendil-works/pi-coding-agent` at `*`, deliberately
   deferred until compatibility testing (§1.6).
 
 Publishing is a human-approved operation (`AGENTS.md`) and none of this blocks
-development, but it does block release.
+development, but the peer range still needs compatibility work before release.
 
 ---
 

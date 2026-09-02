@@ -226,7 +226,9 @@ and mutation checks on the wiring layer.
 **Dependency policy:** the runtime has a single pinned dependency
 (`yaml@2.9.0`, zero transitive dependencies) plus Node built-ins; dev
 dependencies are exact-pinned `typescript` and `@types/node`. No floating
-versions (`^`, `~`, `@latest`) are used, and no dependency is added or
+versions (`^`, `~`, `@latest`) are used in `dependencies`/`devDependencies`
+(the optional host peerDependency is deliberately `*` pending compatibility
+testing — see KNOWN-GAPS §1.6), and no dependency is added or
 upgraded without explicit human review. A supply-chain tool should not have a
 supply-chain problem.
 
