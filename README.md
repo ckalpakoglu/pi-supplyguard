@@ -35,8 +35,7 @@ threats include:
 - typosquatting and repository impersonation *(planned, see
   [coverage](#what-is-enforced-today))*;
 - integrity-control bypass such as `GOSUMDB=off`;
-- direct and indirect mutation of `go.mod` / `go.sum` *(command gate only
-  today, see [coverage](#what-is-enforced-today))*;
+- direct and indirect mutation of `go.mod` / `go.sum`;
 - mutable GitHub Actions references and `curl | sh` installer pipelines
   *(planned)*;
 - delegated sub-agents repeating risky behavior (workers inherit the same
@@ -51,8 +50,9 @@ reviewable instead of silent.
 **Honesty first:** `pi-supplyguard` is a security control, and a security
 control that overstates its coverage is worse than none. This section
 describes the present, not the roadmap. Milestones M1 (Pi skeleton: hook,
-config, profiles, decisions, audit) and M2 (Go command gate) are complete.
-Everything in [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet
+config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
+engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
+complete. Everything in [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet
 implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -73,7 +73,24 @@ Enforced now:
   `GOINSECURE` and `GOPRIVATE=*` are denied in every profile. Checksum
   verification is never weakened to make a proxy or scanner work.
 - Unreadable or unrecognized package/network-capable commands are treated as
-  `UNKNOWN_RISK` and fail conservative (ask / ask / deny by profile).
+  `UNKNOWN_RISK` and fail conservative (ask / ask / deny by profile), and the
+  audit record says which trigger made them unreadable.
+- **Manifest reconciliation:** the tracked files (`go.mod`, `go.sum`,
+  `go.work`, `go.work.sum`, `vendor/modules.txt`) are snapshotted before every
+  tool call and compared on the next one, so a change made by `sed`, a Python
+  script or generated code becomes the same normalized event a `go get` would
+  have produced — add, upgrade, downgrade, remove, replace, exclude. Deleting
+  `go.sum` is a checksum bypass and is denied in every profile. An approved
+  operation that is *supposed* to rewrite a manifest is reconciled and audited
+  instead of being asked about twice. Detection happens on the following tool
+  call: Pi's hook runs before a tool executes, so the boundary is "the agent
+  cannot keep working after an unapproved edit", not "the edit cannot happen".
+- **Go vendor model:** an existing vendor tree is detected and, after a
+  one-time question whose answer is persisted and audited, enforced —
+  `vendor/modules.txt` that no longer matches `go.mod` is vendor drift (warn in
+  `standard`, deny in `hardened`/`paranoid`). `paranoid` enforces vendoring
+  without asking and denies dependency mutation in a project that has no vendor
+  tree.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -81,11 +98,8 @@ Enforced now:
   with profile, session, repository, branch, event and decision. Secrets and
   raw environment dumps are never recorded.
 
-Not yet implemented (planned milestones M3–M9):
+Not yet implemented (planned milestones M4–M9):
 
-- manifest reconciliation — indirect `go.mod`/`go.sum` mutation via `sed`,
-  scripts or generated code is **not detected today**;
-- Go vendor state detection and drift enforcement (M3);
 - dependency justification, scoped one-shot overrides, release-age cooldown
   (M4) — `releaseAge.minimumDays` is parsed but not yet consumed;
 - typosquatting / repository-squatting analysis with a trust corpus (M5);
@@ -154,6 +168,10 @@ land):
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
+| Manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
+| Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |
+| Vendor tree that no longer matches `go.mod` | Warn | Deny | Deny |
+| Dependency mutation with no vendor tree | Allow | Allow | Deny |
 | Harmless operations (`ls`, `git status`, `gofmt`, reading files) | Allow | Allow | Allow |
 
 ## Configuration
@@ -193,8 +211,10 @@ audit:
 ## Commands
 
 - `/supplyguard-status` — show the effective profile, configuration sources
-  and their statuses, registered ecosystem adapters, the cooldown setting,
-  audit/state paths and the current enforcement state.
+  and their statuses, registered ecosystem adapters, the cooldown setting, the
+  watched manifest files and whether a baseline exists, per-ecosystem state
+  (Go project and vendor state), remembered project decisions, audit/state
+  paths and the current enforcement state.
 - `/supplyguard-profile` — show the effective profile, or tighten it for the
   current session only (`/supplyguard-profile paranoid`). It can never lower
   the effective profile and never writes configuration files; lowering the
@@ -204,8 +224,11 @@ audit:
 
 ```text
 Pi tool_call
+→ snapshot the tracked manifests, and reconcile the previous call's changes
 → classification (every call)
-→ ecosystem adapter (Go today) → normalized supply-chain events
+→ ecosystem adapter (Go today) → normalized supply-chain events, from the
+  command AND from any manifest change nobody approved
+→ project state (vendor model), once its ask-once questions are answered
 → profile baseline + findings (most restrictive wins)
 → ASK prompts the human (headless: deny)
 → DENY blocks before execution
@@ -220,15 +243,17 @@ npm run check     # typecheck (tsc --noEmit) + tests (node --test)
 
 The test suite uses Node's built-in test runner — no test framework
 dependency. Tests include Go command parsing, shell wrapper/bypass cases,
-profile decision contract tables, configuration precedence, audit redaction
-and mutation checks on the wiring layer.
+semantic `go.mod`/`go.sum` diffing, manifest snapshots and end-to-end
+`sed`/script reconciliation through the real runtime, vendor drift, profile
+decision contract tables, configuration precedence, audit redaction and
+mutation checks on the wiring layer.
 
 **Dependency policy:** the runtime has a single pinned dependency
 (`yaml@2.9.0`, zero transitive dependencies) plus Node built-ins; dev
 dependencies are exact-pinned `typescript` and `@types/node`. No floating
 versions (`^`, `~`, `@latest`) are used in `dependencies`/`devDependencies`
 (the optional host peerDependency is deliberately `*` pending compatibility
-testing — see KNOWN-GAPS §1.6), and no dependency is added or
+testing — see KNOWN-GAPS §1.9), and no dependency is added or
 upgraded without explicit human review. A supply-chain tool should not have a
 supply-chain problem.
 

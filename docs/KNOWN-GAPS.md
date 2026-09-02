@@ -313,7 +313,7 @@ through"*; mutation-checked.
 
 Adding or tightening `.supplyguard.yaml` had no effect until Pi restarted. Not
 exploitable — layers may only tighten — but surprising. Fixed with a 5s TTL
-(§1.9).
+(§1.11).
 Pinned by *"a project configuration added mid-session is picked up once the
 cache expires"*; mutation-checked.
 
@@ -373,7 +373,7 @@ classified as downgrade"* and both pseudo-version ordering tests.
   (added by this branch) and `license: Apache-2.0` is backed by the `LICENSE`
   file.
 - `peerDependencies` pins `@earendil-works/pi-coding-agent` at `*`, deliberately
-  deferred until compatibility testing (§1.6).
+  deferred until compatibility testing (§1.9).
 
 Publishing is a human-approved operation (`AGENTS.md`) and none of this blocks
 development, but the peer range still needs compatibility work before release.

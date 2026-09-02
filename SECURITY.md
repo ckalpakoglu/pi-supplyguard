@@ -3,8 +3,9 @@
 ## Supported state
 
 `pi-supplyguard` is **pre-release software** (version 0.1.x). Milestones M1
-(Pi skeleton: tool-call hook, configuration, profiles, decisions, audit) and
-M2 (Go command gate) are complete; M3–M9 are not implemented. See
+(Pi skeleton: tool-call hook, configuration, profiles, decisions, audit),
+M2 (Go command gate) and M3 (manifest engine: snapshots, semantic `go.mod`
+state, vendor detection and drift) are complete; M4–M9 are not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -59,12 +60,15 @@ benign.
 Specific limits of the current implementation (details in
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md)):
 
-- **Command interception is not a filesystem boundary.** An agent that cannot
-  run `go get` can still rewrite `go.mod` with `sed`, a script or a generated
-  file, and SupplyGuard will not notice today. Manifest snapshots and
-  semantic reconciliation arrive in M3 — until then the Go command gate is
-  one control among several, not an admission boundary.
-- No vendor state detection or drift enforcement (M3).
+- **Manifest reconciliation is retrospective.** A `go.mod` rewritten by `sed`,
+  a script or generated code IS detected and gated, but on the *next* tool
+  call: Pi's hook runs before a tool executes, and the `tool_result` event
+  cannot block. The boundary is "the agent cannot keep working after an
+  unapproved manifest edit", not "the edit cannot happen". The baseline is
+  established on the first tool call in a session, so changes made while Pi
+  was not running are the starting point rather than a mutation, and a single
+  approved manifest-writing command covers everything else it changed in the
+  same tool call.
 - No release-age cooldown, dependency justification or scoped overrides
   (M4). `releaseAge.minimumDays` is parsed but not consumed.
 - No typosquatting or repository-squatting analysis, and no trust corpus
@@ -111,8 +115,8 @@ Trust boundaries:
 | Go command recognition incl. shell wrappers/composition | **Enforced** (M2) |
 | Exact-version requirement; `@latest`/floating denied | **Enforced** (M2) |
 | Checksum-bypass denial (`GOSUMDB=off` etc.) | **Enforced** (M2) |
-| Manifest snapshots / indirect `go.mod`-`go.sum` mutation detection | Not yet enforced (M3) |
-| Vendor detection / drift | Not yet enforced (M3) |
+| Manifest snapshots / indirect `go.mod`-`go.sum` mutation detection | **Enforced** (M3, retrospective — see limits above) |
+| Vendor detection / drift; ask-once vendor model | **Enforced** (M3) |
 | Release cooldown / scoped overrides / justification | Not yet enforced (M4) |
 | Typosquatting / reposquatting / trust corpus | Not yet enforced (M5) |
 | Vulnerability metadata (OSV) | Not yet enforced (M6) |
@@ -125,6 +129,6 @@ Trust boundaries:
 `pi-supplyguard` holds itself to the standard it enforces: one pinned runtime
 dependency (`yaml@2.9.0`), exact-pinned dev dependencies, no floating
 versions in `dependencies`/`devDependencies` (the optional host
-peerDependency is deliberately `*`, see KNOWN-GAPS §1.6), Node built-ins
+peerDependency is deliberately `*`, see KNOWN-GAPS §1.9), Node built-ins
 preferred, and human review required for any
 dependency change. See [`README.md`](README.md) and [`AGENTS.md`](AGENTS.md).
