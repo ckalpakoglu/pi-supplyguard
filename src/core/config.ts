@@ -72,12 +72,40 @@ function absoluteOr(value: string | undefined, fallback: string): string {
  * provider settings arrive with the milestones that implement them; adding
  * them earlier would mean shipping configuration that silently does nothing.
  */
+/**
+ * SPEC 8.3 -- how much SupplyGuard leans on Socket.
+ *
+ *     off       never invoked
+ *     auto      used when the CLI is present; its absence is a warning
+ *     required  a new dependency needs a Socket verdict; absence is a denial
+ *
+ * Paranoid raises this to `required` regardless of configuration (SPEC 13.4).
+ */
+export const SOCKET_MODES = ["off", "auto", "required"] as const;
+
+export type SocketMode = (typeof SOCKET_MODES)[number];
+
+const SOCKET_RANK = { off: 0, auto: 1, required: 2 } as const satisfies Record<SocketMode, number>;
+
+export function socketRank(mode: SocketMode): number {
+  return SOCKET_RANK[mode];
+}
+
+export function parseSocketMode(value: unknown): SocketMode | undefined {
+  if (value === true) return "required";
+  if (value === false) return "off";
+  return typeof value === "string" && (SOCKET_MODES as readonly string[]).includes(value)
+    ? (value as SocketMode)
+    : undefined;
+}
+
 export interface SupplyGuardConfig {
   readonly version: 1;
   readonly profile: Profile;
   /** SPEC 11.1 -- consumed by M4; carried here so precedence is testable now. */
   readonly releaseAgeMinimumDays: number;
   readonly auditEnabled: boolean;
+  readonly socket: SocketMode;
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -86,6 +114,9 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   profile: DEFAULT_PROFILE,
   releaseAgeMinimumDays: 10,
   auditEnabled: true,
+  // SPEC 4.4: Socket scans are optional and off by default in standard. `auto`
+  // means "use it if it is there", which costs an absent operator nothing.
+  socket: "auto",
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -93,6 +124,7 @@ export interface ConfigLayer {
   readonly profile?: Profile;
   readonly releaseAgeMinimumDays?: number;
   readonly auditEnabled?: boolean;
+  readonly socket?: SocketMode;
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -175,8 +207,19 @@ export function tightenConfig(
     }
   }
 
+  let socket = base.socket;
+  if (layer.socket !== undefined) {
+    socket = socketRank(layer.socket) >= socketRank(base.socket) ? layer.socket : base.socket;
+    if (socket !== layer.socket) {
+      warnings.push(
+        `${layerName} requested socket.enabled "${layer.socket}", which is weaker than the ` +
+          `established baseline "${base.socket}"; ignored.`,
+      );
+    }
+  }
+
   return {
-    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled },
+    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled, socket },
     warnings,
   };
 }
@@ -207,6 +250,7 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     profile?: Profile;
     releaseAgeMinimumDays?: number;
     auditEnabled?: boolean;
+    socket?: SocketMode;
   } = {};
 
   if ("profile" in doc) {
@@ -238,7 +282,21 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     }
   }
 
-  const known = new Set(["version", "profile", "releaseAge", "audit"]);
+  const socket = doc["socket"];
+  if (socket !== undefined) {
+    const mode = parseSocketMode(
+      typeof socket === "object" && socket !== null && !Array.isArray(socket)
+        ? (socket as Record<string, unknown>)["enabled"]
+        : socket,
+    );
+    if (mode === undefined) {
+      warnings.push(`invalid "socket.enabled" value; ignored.`);
+    } else {
+      layer.socket = mode;
+    }
+  }
+
+  const known = new Set(["version", "profile", "releaseAge", "audit", "socket"]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
       warnings.push(`unsupported configuration key "${key}"; ignored in this version.`);

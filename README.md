@@ -54,7 +54,7 @@ config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
 complete, as are M4 (dependency justification, release cooldown, scoped
 one-shot overrides), M5 (identity protection), M6 (vulnerability metadata) and
-M8 (generic policies). Everything in
+M7 (Socket CLI scans) and M8 (generic policies). Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
 Enforced now:
@@ -142,6 +142,15 @@ Enforced now:
   not as mild — `paranoid` denies it (SPEC §16). Withdrawn advisories are
   ignored. `GOPRIVATE` applies here exactly as it does to the proxy: a private
   module name is never sent to a public database.
+- **Socket artifact scans** (optional): when the [Socket CLI](https://socket.dev)
+  is installed, every artifact heading for a trust decision is scored with
+  `socket package score`. A **critical** alert denies in every profile; a high
+  one asks below `paranoid` and denies in it. Socket is *additive* — a clean
+  Socket result can never rescue a dependency the local checks refused
+  (SPEC §13.5). `paranoid` requires a working Socket and denies without one;
+  `hardened` warns and carries on. **Socket Firewall is not implemented** — see
+  [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) §1.5, and note that
+  `socket package score` needs a Socket API token.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through, and a headless `ASK` is denied.
 - **Audit:** supply-chain-relevant tool calls (harmless ones are not
@@ -153,7 +162,6 @@ Not yet implemented (planned milestones M4–M9):
 
 - vulnerability, similarity and transitive-impact findings in the approval
   object (M5, M6);
-- Socket scans and Socket Firewall (M7);
 - adversarial hardening against bypasses such as hostile co-installed
   extensions (M9).
 
@@ -221,6 +229,8 @@ land):
 | Known **critical** vulnerability | Deny, no override | Deny, no override | Deny, no override |
 | Known **high** vulnerability | Ask | Deny + override | Deny + override with a written reason |
 | Advisory with no stated severity | Ask | Ask | Deny + override with a written reason |
+| Socket critical alert | Deny | Deny | Deny |
+| Socket unavailable / unauthenticated | Warn | Warn | Deny |
 | Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
@@ -252,8 +262,8 @@ compiled safe minimums
 ```
 
 Each layer may only tighten the previous one. Configuration currently supports
-`profile`, `releaseAge.minimumDays` (carried for M4, not yet consumed) and
-`audit.enabled`; unknown keys are ignored with a warning rather than silently
+`profile`, `releaseAge.minimumDays`, `audit.enabled` and
+`socket.enabled` (`off` / `auto` / `required`); unknown keys are ignored with a warning rather than silently
 accepted. Project configuration is re-read within a few seconds of change.
 
 Example:

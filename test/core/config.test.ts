@@ -167,9 +167,9 @@ test("an invalid profile value is ignored rather than guessed", async () => {
 });
 
 test("unsupported keys are reported instead of silently accepted", () => {
-  const parsed = parseConfigLayer({ profile: "hardened", socket: { enabled: true } });
+  const parsed = parseConfigLayer({ profile: "hardened", sbom: { format: "cyclonedx" } });
   assert.equal(parsed.layer.profile, "hardened");
-  assert.match(parsed.warnings.join(" "), /unsupported configuration key "socket"/);
+  assert.match(parsed.warnings.join(" "), /unsupported configuration key "sbom"/);
 });
 
 test("a non-mapping document is rejected", () => {
@@ -184,14 +184,15 @@ test("tightenConfig is monotone for every field", () => {
     profile: "hardened",
     releaseAgeMinimumDays: 20,
     auditEnabled: true,
+    socket: "required",
   };
   const weakened = tightenConfig(
     base,
-    { profile: "standard", releaseAgeMinimumDays: 0, auditEnabled: false },
+    { profile: "standard", releaseAgeMinimumDays: 0, auditEnabled: false, socket: "off" },
     "layer",
   );
   assert.deepEqual(weakened.config, base);
-  assert.equal(weakened.warnings.length, 3);
+  assert.equal(weakened.warnings.length, 4);
 
   const tightened = tightenConfig(
     base,
@@ -201,4 +202,30 @@ test("tightenConfig is monotone for every field", () => {
   assert.equal(tightened.config.profile, "paranoid");
   assert.equal(tightened.config.releaseAgeMinimumDays, 45);
   assert.deepEqual(tightened.warnings, []);
+});
+
+// SPEC 8.3 -- `socket.enabled`, and the tighten-only rule applied to it: a
+// project may demand Socket, and may not switch off a Socket the workstation
+// requires.
+test("socket.enabled is parsed in every documented spelling", () => {
+  assert.equal(parseConfigLayer({ socket: { enabled: "required" } }).layer.socket, "required");
+  assert.equal(parseConfigLayer({ socket: { enabled: true } }).layer.socket, "required");
+  assert.equal(parseConfigLayer({ socket: { enabled: false } }).layer.socket, "off");
+  assert.equal(parseConfigLayer({ socket: "auto" }).layer.socket, "auto");
+
+  const bad = parseConfigLayer({ socket: { enabled: "sometimes" } });
+  assert.equal(bad.layer.socket, undefined);
+  assert.match(bad.warnings.join(" "), /invalid "socket.enabled" value/);
+});
+
+test("a project may require Socket but may not switch it off", () => {
+  const base = { ...COMPILED_SAFE_MINIMUMS, socket: "auto" as const };
+
+  const stricter = tightenConfig(base, { socket: "required" }, "project");
+  assert.equal(stricter.config.socket, "required");
+  assert.deepEqual(stricter.warnings, []);
+
+  const weaker = tightenConfig(base, { socket: "off" }, "project");
+  assert.equal(weaker.config.socket, "auto");
+  assert.match(weaker.warnings.join(" "), /weaker than the established baseline/);
 });

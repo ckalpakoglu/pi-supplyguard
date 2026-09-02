@@ -79,6 +79,11 @@ import {
 } from "./core/profiles.ts";
 import { countIdentities, loadTrustCorpus, type TrustCorpus } from "./core/trust.ts";
 import {
+  createSocketEvidence,
+  createSocketProvider,
+  type SocketProviderOptions,
+} from "./providers/socket/index.ts";
+import {
   getProjectDecisions,
   loadState,
   saveState,
@@ -107,6 +112,12 @@ export interface RuntimeOptions {
    * MUST disable it or inject `fetch`: the suite reaches no network.
    */
   readonly osv?: OsvOptions;
+  /**
+   * Socket CLI access (SPEC 13).
+   *
+   * Tests MUST inject `run`: nothing in the suite starts a process.
+   */
+  readonly socket?: SocketProviderOptions;
 }
 
 export interface SupplyGuardRuntime {
@@ -232,6 +243,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();
+  // One provider per runtime: health and per-artifact results are cached in it,
+  // so a session asks the CLI about a given package once.
+  const socketProvider = createSocketProvider(options.socket ?? {});
   const configWarningsAnnounced = new Set<string>();
 
   function repoSession(repoRoot: string): RepoSession {
@@ -276,6 +290,13 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     return project.loaded.config.auditEnabled
       ? createAuditSink(project.paths.audit)
       : NULL_AUDIT_SINK;
+  }
+
+  /** SPEC 13.4 -- paranoid raises Socket to `required` regardless of config. */
+  function socketMode(project: ProjectContext): "off" | "auto" | "required" {
+    const configured = project.loaded.config.socket;
+    if (effective(project) === "paranoid") return "required";
+    return configured;
   }
 
   function effective(project: ProjectContext): Profile {
@@ -456,6 +477,16 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       auditEnabled: project.loaded.config.auditEnabled,
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
+      ...(socketMode(project) === "off"
+        ? {}
+        : {
+            externalEvidence: createSocketEvidence(socketProvider, {
+              // SPEC 13.4: paranoid requires an artifact evaluation for every
+              // new trust decision, whatever the configuration says.
+              requiredFor: (candidate) =>
+                candidate === "paranoid" || socketMode(project) === "required",
+            }),
+          }),
       justifications: session.justifications,
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
       trust: project.trust,
@@ -629,6 +660,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           registry.size() === 0 ? " (none)" : ` (${adapters})`
         }`,
         `  Release cooldown     ${config.releaseAgeMinimumDays} days`,
+        `  Socket               ${socketMode(project)}${
+          socketMode(project) === "off" ? "" : ` (CLI: ${(await socketProvider.health()).version ?? "not available"})`
+        }`,
         `  Trust corpus         ${
           project.trust.empty
             ? "none — typo/repository-squatting analysis is DISABLED"
@@ -655,8 +689,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         `  Enforcement          Go command gate (M2), manifest reconciliation and`,
         `                       vendor state (M3), dependency justification and`,
         `                       release cooldown (M4), identity protection (M5)`,
-        `                       generic policies (M8) and OSV vulnerability data`,
-        `                       (M6) active. Socket checks arrive in M7.`,
+        `                       generic policies (M8), OSV vulnerability data (M6)`,
+        `                       and Socket artifact scans (M7) active. Socket`,
+        `                       Firewall is deliberately not implemented.`,
       ];
 
       if (project.loaded.warnings.length > 0) {

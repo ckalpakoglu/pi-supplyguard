@@ -375,6 +375,16 @@ async function runtimeWith(
     // These tests are about the cooldown; OSV is covered separately and no
     // test may reach the network.
     osv: { env: { GOPROXY: "off" } },
+    // Paranoid requires a Socket verdict (SPEC 13.4). No test may start a
+    // process, so the CLI is injected and answers cleanly.
+    socket: {
+      run: async (args: readonly string[]) => ({
+        ok: true,
+        stdout: args[0] === "--version"
+          ? "1.1.163\n"
+          : JSON.stringify({ ok: true, data: { self: { score: { overall: 90 }, alerts: [] } } }),
+      }),
+    },
   });
 
   return {
@@ -457,7 +467,12 @@ test("an override is never offered for a floating version or a checksum bypass",
     const home = await mkdtemp(join(tmpdir(), "supplyguard-inv-home-"));
     ageTempRoots.push(repo, home);
     const prompts: string[] = [];
-    const runtime = createRuntime({ home, env: {}, proxy: { env: { GOPROXY: "off" } } });
+    const runtime = createRuntime({
+      home,
+      env: {},
+      proxy: { env: { GOPROXY: "off" } },
+      socket: { run: async () => ({ ok: true, stdout: "1.1.163\n" }) },
+    });
     const ctx = {
       cwd: repo,
       hasUI: true,

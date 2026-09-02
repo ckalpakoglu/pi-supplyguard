@@ -35,9 +35,9 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M4 | Human trust gate: dependency justification, approval object, scoped overrides, release cooldown | Complete |
 | M5 | Identity protection: trust corpus, Damerau-Levenshtein, reposquatting | Complete |
 | M6 | Vulnerability metadata: OSV, provider abstraction | Complete |
-| M7 | Socket integration: artifact/manifest scans, health, Firewall | **Next** |
+| M7 | Socket integration: artifact/manifest scans, health, Firewall | Scans + health complete; Firewall out of scope by decision |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
-| M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Not started |
+| M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | **Next** |
 
 ## Layout
 
@@ -61,6 +61,7 @@ src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
 src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
 src/generic/            rules that belong to no ecosystem, registered as an adapter
+src/providers/socket/   the ONLY process SupplyGuard starts; env is allow-listed
 src/generic/shell.ts      shell parser shared by command analysis
 ```
 
@@ -88,27 +89,33 @@ src/generic/shell.ts      shell parser shared by command analysis
   or an out-of-band edit could desynchronize.
 - **Ask-once project questions are generic.** The core prompts, persists and
   audits an opaque id/value pair. Vendor mode (SPEC §9.2) is the first user; the
-  Hardened Socket Firewall opt-in (SPEC §13.3) is the second, in M7.
+  Hardened Socket Firewall opt-in (SPEC §13.3) would be the second, if Firewall
+  is ever implemented.
 - **Dependency mutations are Chief-only** (human decision, 2026-09-01, in
   `AGENTS.md`). A headless worker's `ASK` fails closed. Do not add a bypass.
 - **The Pi host package is deliberately not installed.** `types/pi-coding-agent.d.ts`
   is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
 
-## What M6 needs
+## What M9 needs
 
-`docs/SPEC.md` §16 is short and the shape is already in place: `EngineContext`
-takes an `externalEvidence` provider whose findings can only tighten
-(`withExternalEvidence`), and M4 established both the "adapter answers a
-question about an artifact" hook and the network posture that goes with it.
+M9 is adversarial hardening, and three of its targets are already written down
+as limits rather than intentions:
 
-OSV (`https://api.osv.dev/v1/query`) takes an ecosystem, a package name and a
-version and needs no credentials. The questions M6 has to answer are the ones
-M4 answered for the proxy, repeated: which modules must never be sent (the same
-`GOPRIVATE` rule), what an unavailable provider means per profile (SPEC §16:
-"unknown is never silently equivalent to clean in Paranoid"), and whether a
-finding is overridable — a known CRITICAL vulnerability should not be, and
-SPEC §4.4 says High is "Deny / override" in hardened and "Deny / exceptional
-override" in paranoid.
+- **A manifest change made and reverted inside ONE tool call** is invisible to
+  reconciliation, because it compares states rather than history
+  (`docs/KNOWN-GAPS.md` §1.1). No hook the host offers helps; this needs
+  filesystem-level watching or a network-level control on the fetch.
+- **Vendored `.go` source is not tracked** — only `vendor/modules.txt` (§1.8).
+  With vendoring enforced the build compiles from `vendor/`, so an edit there
+  changes nothing SupplyGuard watches.
+- **A hostile co-installed extension** can rewrite a command SupplyGuard already
+  approved, because the host does not re-validate `event.input` after a handler
+  mutates it (§1.10).
+
+The bypass corpus in `test/go/bypass.test.ts` and `test/core/reconcile.test.ts`
+is where new cases belong. `AGENTS.md` §"Chief / Worker Invariant" is already
+pinned by tests; what is not covered is a systematic sweep of headless
+behaviour across every gate M4–M7 added.
 
 ## Verification
 

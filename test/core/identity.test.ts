@@ -283,7 +283,21 @@ async function repoWithCorpus(
 
   const prompts: string[] = [];
   const notices: string[] = [];
-  const runtime = createRuntime({ home, env: {}, proxy: { env: { GOPROXY: "off" } } });
+  const runtime = createRuntime({
+    home,
+    env: {},
+    proxy: { env: { GOPROXY: "off" } },
+    // Paranoid requires a Socket verdict (SPEC 13.4). No test may start a
+    // process, so the CLI is injected and answers cleanly.
+    socket: {
+      run: async (args: readonly string[]) => ({
+        ok: true,
+        stdout: args[0] === "--version"
+          ? "1.1.163\n"
+          : JSON.stringify({ ok: true, data: { self: { score: { overall: 90 }, alerts: [] } } }),
+      }),
+    },
+  });
   const ctx = {
     cwd: repo,
     hasUI: true,

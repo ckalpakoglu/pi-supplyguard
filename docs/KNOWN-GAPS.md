@@ -1,6 +1,7 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M6 and M8 complete. M7 and M9 not started.
+**Status:** M1–M6 and M8 complete. M7 complete for scans and provider health;
+Socket Firewall deliberately not implemented (§1.5). M9 not started.
 **Last updated:** 2026-09-02
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -123,14 +124,40 @@ are structural rather than temporary:
 - **No Unicode or homoglyph normalization.** SPEC §12.3 lists it as optional
   future work, and a Cyrillic `о` in a module path would pass this check today.
 
-### 1.5 Whole subsystems are absent, not partial
+### 1.5 Socket is the CLI only: no Firewall, and no manifest scan
 
-None of the following exist in any form. A clean SupplyGuard result today says
-nothing about any of them:
+Human decision, 2026-09-02: M7 integrates the **Socket CLI**
+(`socket package score`), not Socket Firewall. What that leaves undone is
+load-bearing, because SPEC §13.4 makes Firewall mandatory for Paranoid:
 
-| Capability | Milestone |
-|---|---|
-| Socket artifact/manifest scans, Firewall, provider health | M7 |
+- **No protected fetch.** SupplyGuard can tell you a package looks bad *before*
+  you fetch it; it cannot stop the fetch at the network layer. Paranoid
+  therefore does NOT meet SPEC §13.4 in full, and SPEC §4.4's "Socket Firewall:
+  Mandatory" row is unimplemented. The ask-once Hardened Firewall prompt
+  (SPEC §13.3) does not exist either — the ask-once machinery it would use is
+  built and in service for the vendor question.
+- **No manifest/project scan.** SPEC §13.4 requires one after a dependency graph
+  mutation. Only per-artifact scoring is wired.
+
+**`socket package score` requires a Socket API token.** The CLI ships a public
+token, but it is used only by the `socket npm`/`pnpm`/`yarn` wrappers, not by
+the scan commands, which check `hasDefaultApiToken()` and fail with "This
+command requires a Socket API token for access". Without `SOCKET_CLI_API_TOKEN`
+or `socket login`, every artifact scan is therefore `unavailable` — which
+**warns** in standard and hardened and **denies** in paranoid. In other words:
+
+> Paranoid cannot admit a new dependency unless the Socket CLI is installed
+> *and* authenticated.
+
+That is SPEC §13.4 working as designed, not a defect, but it is the kind of
+thing that gets a profile switched off if it arrives as a surprise.
+
+**Never exercised against the real CLI.** The command, the purl form and the
+`{ok, data:{self:{score,alerts}}}` document shape were read out of the published
+`socket@1.1.163` bundle, and every behaviour is tested against an injected
+runner — no test starts a process. A CLI change would surface as `unavailable`
+(the conservative direction) rather than as a wrong verdict, because an
+unrecognized document is never read as clean.
 
 The approval object is still partial. SPEC §11.2 lists vulnerability findings,
 similarity findings and transitive impact alongside the purpose, stdlib and
