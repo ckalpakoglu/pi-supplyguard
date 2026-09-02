@@ -2,7 +2,7 @@
 
 **Last updated:** 2026-09-02
 **Branch:** `feature/m3-manifest-engine` → merged to `main`
-**State:** `npm run check` green — typecheck clean, 242 tests passing.
+**State:** `npm run check` green — typecheck clean, full suite passing.
 
 This file is navigation for whoever picks the project up next. It does not
 duplicate `docs/KNOWN-GAPS.md`, which is the authoritative record of what is
@@ -97,8 +97,27 @@ src/generic/shell.ts      shell parser shared by command analysis
   `/supplyguard-status` labels it "enforced from M4".
 - Scoped one-shot overrides (SPEC §17.2) have no implementation at all.
 - The ask-once decision plumbing (`ProjectDecisionRequest`, state, audit) is a
-  reasonable model for pre-scoped worker approval, which §26 of `AGENTS.md`
-  defers to M4.
+  reasonable model for pre-scoped worker approval, which `AGENTS.md` defers to
+  M4.
+
+Two questions M4 has to answer before it can be built, neither settled by the
+SPEC:
+
+1. **Where does the justification come from?** SPEC §11.2 requires `purpose`,
+   `stdlibConsidered` and "why stdlib is insufficient" in a dependency
+   approval. Those are the agent's answers, and SupplyGuard has no channel to
+   ask for them today: it sees a tool call, not a rationale. The options are a
+   SupplyGuard-registered tool the model must call before a dependency
+   operation, a slash command the human runs, or leaving the fields to the
+   human at the prompt. This is a product decision, not an implementation
+   detail.
+2. **Where does release age come from?** SPEC §11.1 needs a publication date.
+   For Go that means querying the module proxy
+   (`https://proxy.golang.org/<module>/@v/<version>.info`) over the network —
+   the first outbound request SupplyGuard would ever make. Offline behavior,
+   caching, timeouts and the per-profile failure posture (SPEC §13.8's shape)
+   all need deciding, and `GOPROXY`/`GOPRIVATE` must be respected so a private
+   module is never leaked to a public proxy.
 
 ## Verification
 
