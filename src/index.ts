@@ -61,7 +61,7 @@ import {
   type ProjectDecisionResolver,
   type ResolvedProjectDecision,
 } from "./core/engine.ts";
-import type { NormalizedToolCall } from "./core/events.ts";
+import { normalizeToolCall } from "./host/tool-input.ts";
 import {
   createJustificationStore,
   JUSTIFY_TOOL,
@@ -193,19 +193,6 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
     }
   }
   return cwd;
-}
-
-function normalizeToolCall(event: ToolCallEvent): NormalizedToolCall {
-  const raw: unknown = event.input;
-  const input =
-    typeof raw === "object" && raw !== null && !Array.isArray(raw)
-      ? (raw as Record<string, unknown>)
-      : {};
-  return {
-    toolName: event.toolName,
-    input,
-    ...(event.toolCallId === undefined ? {} : { toolCallId: event.toolCallId }),
-  };
 }
 
 function uiPort(ctx: ExtensionContext): ApprovalUi {
