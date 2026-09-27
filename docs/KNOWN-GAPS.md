@@ -391,6 +391,37 @@ omp (oh-my-pi) exposes tools Pi does not. What each one gets:
 omp subagents run headless, so a dependency `ASK` in a subagent fails closed
 and the Chief-only dependency rule (§2.8) holds.
 
+### 1.15 Artifact source is never analyzed
+
+A dependency heading for a human gate is checked for known vulnerabilities
+(OSV), known alert shapes (Socket) and identity confusion (§1.4) — but nothing
+reads the code itself. Novel malware in an otherwise plausible package, the
+one attack none of those can name, passes every check SupplyGuard has and
+reaches the approval prompt looking clean.
+
+Human decision, 2026-09-27: close this with an **experimental external
+provider** built on Jev (TypeSafe AI's System One typed-decision model), and
+only that. The agreed shape:
+
+- a `src/providers/jev/` peer of the Socket provider, feeding the same
+  `withExternalEvidence` channel — additive only, never a fifth decision;
+- configuration `jev.enabled`, **default off**, marked `experimental` in
+  status and audit records;
+- while experimental, a high-confidence malicious verdict contributes at most
+  an `ASK`: the human sees the finding; nothing is auto-denied, and a provider
+  outage is a warn in every profile (a deliberate deviation from SPEC §17.3's
+  fail-closed-for-providers, because an experimental provider must not be able
+  to brick `paranoid`);
+- **public modules only**: source is read from `vendor/` or the module cache
+  and sent nowhere if `GOPRIVATE`/`GONOPROXY`/`GOPROXY=off` covers the module;
+- the model's explanation text is untrusted display data, never instructions;
+- `JEV_API_KEY` never enters audit, logs or prompts; caching is per
+  module@version and content hash; tests use an injected `fetch`.
+
+Deferred until the P0 hardening batch (vendored-source writes, §1.9, §1.10's
+audit trail) landed; those are done, so nothing blocks the provider but the
+decision to switch it on.
+
 ---
 
 ## 2. Deliberate behaviors that can look like gaps

@@ -88,6 +88,10 @@ Enforced now:
   module@version` are recognized through wrappers and composition such as
   `env FOO=x go get …`, `cd dir && go get …`, `sh -c 'go get …'` (including
   combined flags like `bash -lc`) and `command go get …`.
+- **Directive execution:** `go generate` runs the `//go:generate` directives
+  declared in source — arbitrary commands, vendored files included, and a
+  classic shape is `//go:generate go run tool@latest`. It is gated as a
+  third-party execution in every profile.
 - **Exact versions:** a bare module path (`go get github.com/foo/bar`) and
   floating versions (`@latest`, `v1`, branch names) are denied; only an exact
   semantic version or full commit hash proceeds to the trust pipeline (an
@@ -111,7 +115,12 @@ Enforced now:
   A command that can be *read* as writing a tracked manifest — a redirection,
   `sed -i`, `cp`/`mv`/`tee`, even `git checkout go.mod` — is gated **before** it
   runs, which closes the substitute-build-revert sequence that leaves no trace
-  for a snapshot to find.
+  for a snapshot to find. A write into **vendored source** — `sed -i vendor/…`,
+  `cp … vendor/…`, a redirection — is vendor drift and is gated before it runs;
+  the tree enforced builds compile from is not something to hand-edit. And a
+  tool call that runs with input differing from what SupplyGuard evaluated (a
+  co-installed extension revising it after the gate) is warned about and
+  audited.
 - **Go vendor model:** an existing vendor tree is detected and, after a
   one-time question whose answer is persisted and audited, enforced —
   `vendor/modules.txt` that no longer matches `go.mod` is vendor drift (warn in
@@ -263,6 +272,8 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
+| `go generate` (runs `//go:generate` directives from any source file) | Ask | Ask | Ask |
+| Direct write into vendored source (`sed -i vendor/…`) | Ask | Deny | Deny |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
 | Tracked manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
 | Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |
