@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { isSafeArgument } from "../../src/providers/socket/cli.ts";
+import { createSocketRunner, isSafeArgument } from "../../src/providers/socket/cli.ts";
 import {
   createSocketEvidence,
   createSocketProvider,
@@ -72,6 +72,54 @@ test("unsafe process arguments are refused", () => {
   assert.equal(isSafeArgument("a;rm -rf /"), false);
   assert.equal(isSafeArgument("a$(whoami)"), false);
   assert.equal(isSafeArgument(""), false);
+});
+
+/**
+ * A stand-in `socket` executable that answers the two invocations SupplyGuard
+ * makes and fails anything else, so the real runner and `execFile` path run.
+ */
+async function fakeSocketCli(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "supplyguard-socket-cli-"));
+  tempRoots.push(dir);
+  const script = join(dir, "socket");
+  await writeFile(
+    script,
+    [
+      "#!/bin/sh",
+      'if [ "$*" = "--version" ]; then echo "1.2.3"; exit 0; fi',
+      'if [ "$1 $2 $4" = "package score --json" ]; then',
+      `  printf '%s\\n' '${SCORE_OK}'`,
+      "  exit 0",
+      "fi",
+      "exit 2",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return script;
+}
+
+// The runner's argument check once refused SupplyGuard's own `--version` and
+// `--json`, so a working Socket install could never pass its health check or
+// score an artifact.
+test("an installed Socket CLI passes its health check and scores an artifact", async () => {
+  const provider = createSocketProvider({ command: await fakeSocketCli() });
+  assert.deepEqual(await provider.health(), { ok: true, version: "1.2.3" });
+  const result = await provider.checkArtifact("go", "github.com/foo/bar", "v1.2.3");
+  assert.equal(result.kind, "scanned", JSON.stringify(result));
+});
+
+test("only SupplyGuard's own flags pass the runner, and only exactly", async () => {
+  const run = createSocketRunner({ command: await fakeSocketCli() });
+  for (const args of [
+    ["package", "score", "-rf", "--json"],
+    ["package", "score", "--json=x", "--json"],
+    ["package", "score", "--versions", "--json"],
+  ]) {
+    const result = await run(args);
+    assert.equal(result.ok, false, args.join(" "));
+    assert.equal(result.reason, "refused to pass an unsafe argument", args.join(" "));
+  }
 });
 
 test("a score document is read into alerts", () => {

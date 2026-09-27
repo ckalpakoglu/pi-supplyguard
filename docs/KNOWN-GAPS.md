@@ -695,6 +695,29 @@ segment's redirections when no command survives unwrapping.
 Pinned by *"a checksum bypass is caught however it is spelled"* and
 *"wrappers and nesting do not hide the write"*; both fail without the fix.
 
+### D18 — the Socket runner refused SupplyGuard's own flags, so Socket never ran
+
+**Severity: medium (fail-closed, not a bypass).** The runner checked every
+argument with `isSafeArgument`, which refuses anything starting with `-`. The
+health check passes `--version` and the score query passes `--json`, so both
+were refused before any process started:
+
+```text
+socket --version                          ->  was: "refused to pass an unsafe argument"
+socket package score pkg:golang/… --json  ->  was: never run
+```
+
+Even with the CLI installed, Socket contributed nothing in standard and
+hardened, and paranoid denied every new trust decision on a provider failure
+that was really SupplyGuard's own. The suite missed it because every Socket
+test injected a runner, so the real argument check never ran. Found while
+testing SupplyGuard under Pi, where the prompt showed the misleading reason
+instead of "not installed". Fixed by letting SupplyGuard's own flags through,
+matched exactly (`CLI_FLAGS`); every other argument is still checked.
+Pinned by *"an installed Socket CLI passes its health check and scores an
+artifact"* (fails without the fix) and *"only SupplyGuard's own flags pass the
+runner, and only exactly"*.
+
 ---
 
 ## 4. Release readiness

@@ -7,7 +7,8 @@
  * - `execFile`, never a shell. Arguments are an array, so no quoting question
  *   can ever arise from a module path.
  * - Arguments are validated before they are passed. A purl that could be read
- *   as a flag is refused rather than escaped.
+ *   as a flag is refused rather than escaped. The only flags that pass are
+ *   SupplyGuard's own constants (`CLI_FLAGS`), matched exactly.
  * - The environment is an allow-list. A security tool that spawns a process
  *   with the agent's full environment has handed it every secret in the
  *   session.
@@ -40,6 +41,12 @@ export interface SocketRunResult {
 }
 
 export type SocketRunner = (args: readonly string[]) => Promise<SocketRunResult>;
+
+/**
+ * The flags SupplyGuard itself passes. They are compared exactly, so an
+ * operand that merely starts with `-` is still refused by `isSafeArgument`.
+ */
+const CLI_FLAGS: Record<string, true> = { "--version": true, "--json": true };
 
 export interface SocketCliOptions {
   /** Executable to run. Defaults to `socket` from PATH. */
@@ -84,7 +91,7 @@ export function createSocketRunner(options: SocketCliOptions = {}): SocketRunner
 
   return async (args) =>
     new Promise<SocketRunResult>((resolve) => {
-      if (!args.every(isSafeArgument)) {
+      if (!args.every((arg) => CLI_FLAGS[arg] === true || isSafeArgument(arg))) {
         resolve({ ok: false, stdout: "", reason: "refused to pass an unsafe argument" });
         return;
       }
