@@ -4,6 +4,15 @@ A policy enforcement layer for AI coding agents that makes dependency, tooling,
 build, and CI supply-chain trust decisions explicit, independently checked,
 reviewable, and enforceable before execution.
 
+> **Status: in development.** The Go pipeline is feature-complete and covered
+> by tests, but this is pre-release software: the versioned milestones are
+> done while npm/Python/Cargo adapters, Socket Firewall and publication are
+> not. Configuration and behavior may still change without notice, the
+> package is not on npm, and it has had one primary user and reviewer — treat
+> it as an experiment to evaluate, not a finished control. Read
+> [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) before relying on it, and pin a
+> commit if you do.
+
 `pi-supplyguard` is an extension for the [Pi coding agent](https://pi.dev). It
 intercepts supply-chain-relevant agent tool calls **before** execution,
 normalizes them into ecosystem-independent security events, evaluates local
@@ -21,6 +30,19 @@ In a headless session an `ASK` fails closed.
 - **Default profile:** `standard`.
 - **License:** Apache-2.0.
 
+## Contents
+
+- [Why](#why)
+- [What is enforced today](#what-is-enforced-today)
+- [Installation](#installation) — Pi and omp
+- [Security profiles](#security-profiles)
+- [Configuration](#configuration)
+- [Tools and commands](#tools-and-commands)
+- [How a tool call is evaluated](#how-a-tool-call-is-evaluated)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [Documentation](#documentation)
+
 ## Why
 
 An AI coding agent with shell access can add dependencies, install tools,
@@ -32,12 +54,10 @@ threats include:
 
 - unpinned and floating dependencies and tools, including `@latest`;
 - compromised newly released package versions and dependency confusion;
-- typosquatting and repository impersonation *(planned, see
-  [coverage](#what-is-enforced-today))*;
+- typosquatting and repository impersonation;
 - integrity-control bypass such as `GOSUMDB=off`;
 - direct and indirect mutation of `go.mod` / `go.sum`;
-- mutable GitHub Actions references and `curl | sh` installer pipelines
-  *(planned)*;
+- mutable GitHub Actions references and `curl | sh` installer pipelines;
 - delegated sub-agents repeating risky behavior (workers inherit the same
   enforcement and, being headless, cannot pass a human gate).
 
@@ -163,14 +183,10 @@ Enforced now:
   with profile, session, repository, branch, event and decision. Secrets and
   raw environment dumps are never recorded.
 
-Not yet implemented (planned milestones M4–M9):
-
-- vulnerability, similarity and transitive-impact findings in the approval
-  object (M5, M6);
-What remains is documented in [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md):
-Socket Firewall and the Socket manifest scan, a manifest rewritten from inside
-a script rather than by a readable command, vendored source files, and a
-hostile co-installed extension.
+Not yet implemented: Socket Firewall and the Socket manifest scan, npm /
+Python / Cargo adapters, brokering a delegated worker's `ASK` up to the Chief
+UI, and defense against a hostile co-installed extension. Each is documented
+with its reason in [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md).
 
 ## Installation
 
@@ -188,13 +204,13 @@ pi install -l ./relative/path/to/pi-supplyguard    # project settings
 From git (pin a tag or commit ref; Pi clones it and runs npm install):
 
 ```bash
-pi install git:github.com/<owner>/pi-supplyguard@<ref>
+pi install git:github.com/ckalpakoglu/pi-supplyguard@<ref>
 ```
 
 To try it once without installing:
 
 ```bash
-pi -e git:github.com/<owner>/pi-supplyguard
+pi -e git:github.com/ckalpakoglu/pi-supplyguard
 ```
 
 Installed packages can be listed with `pi list` and enabled/disabled with
@@ -227,9 +243,7 @@ raises gates for production/security-sensitive work; `paranoid` treats
 dependency compromise as an active threat.
 
 Behavior that differs per profile **today** (from the enforced baseline
-tables; the full design matrix in [`docs/SPEC.md` §4.4](docs/SPEC.md) —
-vendoring, release age, Socket, CI pinning — is enforced as those milestones
-land):
+tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 
 | Behavior | standard | hardened | paranoid |
 |---|---|---|---|
@@ -325,6 +339,27 @@ Pi tool_call
 → DENY blocks before execution
 → audit
 ```
+
+## Project layout
+
+```text
+src/index.ts        host wiring: hooks, approval UI, audit, commands, tool
+src/host/           host tool shapes normalized for the core (omp, Pi)
+src/core/           policy engine: events, decisions, profiles, manifest
+                    snapshots, approval, justification, config, audit, state
+src/adapters/       ecosystem adapters (Go today) behind a registry
+src/generic/        ecosystem-agnostic policy: shell parsing, installer
+                    pipelines, sensitive writes, GitHub Actions references
+src/analyzers/      identity analysis (Damerau-Levenshtein, squatting)
+src/providers/      external providers (Socket CLI)
+types/              hand-written declarations for the host extension API
+test/               the suite every rule above is pinned by
+docs/               SPEC.md (canonical design), KNOWN-GAPS.md (honesty)
+```
+
+The policy core is ecosystem-agnostic: Go knowledge lives only in its adapter,
+and there is no hard-coded command branch in the engine. New ecosystems are
+added as event producers/verifiers without redesigning it.
 
 ## Development
 
