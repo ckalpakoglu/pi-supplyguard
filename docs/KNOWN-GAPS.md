@@ -269,17 +269,19 @@ inside a script the command line does not name.
 ### 1.9 `go generate` asks in every profile
 
 ```text
-go generate ./...  ->  THIRD_PARTY_CAPABLE
+go generate ./...  ->  ThirdPartyExecution (ask / ask / ask)
 ```
 
-`go generate` executes arbitrary `//go:generate` directives found in source. It
-is arguably closer to `ThirdPartyExecution` than to `go build`. It is currently
-classified with the other build-shaped subcommands, which means allow / allow /
-warn across the profiles.
+`go generate` runs the `//go:generate` directives declared in source —
+arbitrary commands, in any checked-out or vendored file, and a classic shape is
+`//go:generate go run tool@latest`: a floating-version install and execute the
+command gate never sees, because it happens inside the tool. Formerly this
+section recorded the operation as merely capable; raised 2026-09-27.
 
-**Not yet scheduled.** Raising it is a one-line change in
-`CAPABLE_SUBCOMMANDS`; the reason it has not been made is that no one has
-assessed the false-positive cost on repositories that generate routinely.
+The known cost: repositories that generate routinely now answer a prompt per
+`go generate`. That is the same friction class as an exact-version `go get`,
+and the alternative — treating execution of arbitrary declared commands like
+`go build` — is the hole the raise closed.
 
 ### 1.10 A hostile co-installed extension can rewrite an approved command
 

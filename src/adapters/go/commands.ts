@@ -345,6 +345,25 @@ function analyzeMod(args: readonly ShellWord[]): GoOperation[] {
   return [];
 }
 
+/**
+ * `go generate` runs the `//go:generate` directives declared in source —
+ * arbitrary commands, in any checked-out or vendored file, and a classic shape
+ * is `//go:generate go run tool@latest`. That is a third-party execution the
+ * command gate never sees, so the subcommand itself is gated.
+ */
+function analyzeGenerate(): GoOperation[] {
+  return [
+    {
+      eventClass: "ThirdPartyExecution",
+      classification: "THIRD_PARTY_CAPABLE",
+      summary:
+        "runs the //go:generate directives declared in source files (vendored ones " +
+        "included), which are arbitrary commands and frequently install and run " +
+        "third-party tools",
+    },
+  ];
+}
+
 function analyzeWork(args: readonly ShellWord[]): GoOperation[] {
   const sub = args[0]?.text;
   if (sub === "edit") return editOperations(args.slice(1), "go.work");
@@ -499,6 +518,7 @@ export function analyzeCommand(command: string): GoAnalysis {
     else if (sub === "mod") operations.push(...analyzeMod(rest));
     else if (sub === "work") operations.push(...analyzeWork(rest));
     else if (sub === "env") operations.push(...analyzeEnv(rest));
+    else if (sub === "generate") operations.push(...analyzeGenerate());
 
     if (CAPABLE_SUBCOMMANDS.has(sub)) capable = true;
     else if (!INERT_SUBCOMMANDS.has(sub) && sub !== "get" && sub !== "mod" && sub !== "env") {
