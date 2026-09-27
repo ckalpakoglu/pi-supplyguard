@@ -31,10 +31,10 @@ The honest version of the roadmap: which attack survives which control.
 
 | # | Class | Example | Defeated by | Status |
 |---|---|---|---|---|
-| A | Novel malware in a fresh version of a plausible dependency | event-stream, ua-parser-js | cooldown + **content scan before approval** (M10) + vendor quarantine + hermetic build (M11) | cooldown ✓; rest missing |
-| B | Typosquat / dependency confusion, novel name | `github.com/google/uuid`-lookalike nobody protects | auto-generated corpus (M14), homoglyph normalization (M14), Jev name/context check (M10) | corpus manual-only; homoglyph gap §1.4 |
+| A | Novel malware in a fresh version of a plausible dependency | event-stream, ua-parser-js | cooldown + **local content scan before approval** (M10) + optional external analyzers + vendor quarantine + hermetic build (M11) | cooldown ✓; rest missing |
+| B | Typosquat / dependency confusion, novel name | `github.com/google/uuid`-lookalike nobody protects | auto-generated corpus (M14), homoglyph normalization (M14), optional external analyzer context check (M10) | corpus manual-only; homoglyph gap §1.4 |
 | C | Compromised release moment | tag pushed same day as malware | release age ✓ + maintainer/repo signal (M14) | age ✓; signals missing |
-| D | Build-time execution/exfil by dependency code | `init()`, cgo, generate directives | **hermetic build after mutation** (M11): enforced vendor, `GOPROXY=off`, no exec of unscanned code; Jev source scan flags egress/exec shapes (M10) | vendoring enforced; hermetic gate missing |
+| D | Build-time execution/exfil by dependency code | `init()`, cgo, generate directives | **hermetic build after mutation** (M11): enforced vendor, `GOPROXY=off`, no exec of unscanned code; local scanner flags egress/exec shapes in package-init paths (M10) | vendoring enforced; hermetic gate missing |
 | E | Agent-injected malice through the shell | the whole bypass corpus | command gate ✓ + fetch→execute correlation (M12) + out-of-band write watch (M12) | gate ✓; correlation/watch missing |
 | F | CI compromise | mutable `uses:`, `docker://` tags | Actions pinning ✓ + **image digest pinning** (M12) | refs ✓; digests §1.3 |
 | G | Host-layer (co-extension, eval cells) | input rewrite, `%pip install` | audit trail ✓ (1.10, 1.14); prevention impossible in-host | documented, accepted |
@@ -52,34 +52,57 @@ For class A that is decoration. The prompt must carry **evidence about the
 artifacts' content**, and an approval without an evidence pack must not be
 offerable.
 
-- **Jev provider** per the recorded decision (KNOWN-GAPS §1.15): default off,
-  `experimental` flag in status/audit, additive-only, ASK cap while
-  experimental, public modules only, explanation text is untrusted display
-  data. New: `src/providers/jev/`, config `jev.enabled`.
-- **`go.sum` semantic diff** (§1.8): which module moved, in which direction,
-  surfaced in the approval object — the human approves *what actually
-  changed*, not "go.mod ±1 line".
-- **Evidence-pack approval**: when an artifact heads for a human, the prompt
-  assembles justification + OSV + Socket + similarity + release age + Jev
-  findings (files/lines when available) + go.sum delta. A dependency event
-  with **no content evidence at all** (provider off, no vendor tree) is
-  `ASK` with an explicit "uninspected content" banner in hardened, `DENY` in
-  paranoid — today paranoid can approve uninspected code if Socket is healthy,
-  which defeats class A.
-- **Approval fatigue metric**: count ASKs per session in audit; a profile
-  option `approval bundling` (one prompt listing the session's pending
-  dependency operations, each with its evidence) ships behind a flag and is
-  measured before it becomes default.
+**Human decision, 2026-09-27: Jev is never a dependency, and the system must
+be complete without it.** Consequences, binding on every milestone:
+
+- **The baseline content evidence is local, deterministic and offline.** A
+  built-in scanner (`src/analyzers/content.ts`, node built-ins only) reads the
+  module's source from the module cache or `vendor/` and reports findings
+  with file and line: network egress or process execution reachable from
+  package-init paths (`init()`, `var` initialization), wholesale environment
+  harvesting (`os.Environ` plus an egress call), large encoded blobs, dynamic
+  loading from cgo, and `//go:generate` directives inside the dependency. It
+  is honest about being a heuristic for lazy/templated malware — the incident
+  record says most real attacks are exactly that — and every rule ships with
+  a false-positive corpus. Findings surface as a new `ArtifactAnomaly` event
+  class; the human sees code, not a score.
+- **Jev is one optional backend behind a generic analyzer interface** — the
+  same seat Socket sits in, implemented per the recorded decision
+  (KNOWN-GAPS §1.15: default off, experimental-marked, additive-only, ASK
+  cap, public modules only, untrusted explanation text). Removing the entire
+  `src/providers/jev/` directory must leave every gate, every test and every
+  milestone acceptance green.
+- **No gate keys on a remote provider.** "Content inspected" means the local
+  scanner ran over the artifact's actual source. External analyzers can only
+  add findings; an absent, unhealthy or unconfigured one contributes nothing
+  and withholds nothing.
+- Evidence packs assemble from whatever exists: justification + OSV + Socket +
+  similarity + release age + **local content findings** (always, offline) +
+  external analyzer findings (when configured) + go.sum delta. A dependency
+  event with **no content evidence at all** (no source resolvable — private
+  module, no vendor tree, cache miss) is `ASK` with an explicit "uninspected
+  content" banner in hardened, `DENY` in paranoid — today paranoid can
+  approve uninspected code if Socket is healthy, which defeats class A.
+
+**`go.sum` semantic diff** (§1.8): which module moved, in which direction,
+surfaced in the approval object — the human approves *what actually changed*,
+not "go.mod ±1 line".
+
+**Approval fatigue metric**: count ASKs per session in audit; a profile
+option `approval bundling` (one prompt listing the session's pending
+dependency operations, each with its evidence) ships behind a flag and is
+measured before it becomes default.
 
 ### P2 — Blast radius (M11)
 
 Assume the human approves wrong. What limits the damage?
 
 - **Vendor quarantine**: with vendoring enforced, a newly added dependency is
-  `vendorState = quarantined` until scanned (M10 provider) — builds from
-  vendor proceed, but `paranoid` requires `scanned` before any build/test, and
-  `hardened` warns. The invariant: **uninspected third-party code never
-  executes in a guarded build in paranoid.**
+  `vendorState = quarantined` until the local scanner has run over its source
+  — builds from vendor proceed, but `paranoid` requires `scanned` before any
+  build/test, and `hardened` warns. The invariant: **uninspected third-party
+  code never executes in a guarded build in paranoid.** The scanner is local,
+  so quarantine clears offline.
 - **Hermetic post-mutation gate**: after `dependencyGraphDirty`, the first
   build-shaped command must run hermetically. SupplyGuard does not execute
   commands, so the gate is: synthesize `GOFLAGS=-mod=vendor GOPROXY=off` as
@@ -137,7 +160,7 @@ KNOWN-GAPS updated in the same commit, live Pi+omp smoke for the host surface.
 
 | M | Delivers | Key files | Acceptance |
 |---|---|---|---|
-| M10 | Jev provider, go.sum semantics, evidence-pack approvals, uninspected-content gates, fatigue metric | `src/providers/jev/`, `src/adapters/go/modfile.ts`, `src/core/approval.ts`, `src/core/engine.ts` | A class-A synthetic (fixture module with planted exfil) is flagged or banner-denied in paranoid; prompt shows file/line |
+| M10 | Local content scanner + `ArtifactAnomaly`, optional Jev backend behind the analyzer interface, go.sum semantics, evidence-pack approvals, uninspected-content gates, fatigue metric | `src/analyzers/content.ts`, `src/providers/jev/` (optional), `src/adapters/go/modfile.ts`, `src/core/approval.ts`, `src/core/engine.ts` | A class-A synthetic (fixture module with planted exfil) is flagged **with Jev removed from the tree**; prompt shows file/line |
 | M11 | Quarantine vendor state, hermetic post-mutation gate | `src/adapters/go/project.ts`, `src/adapters/go/index.ts`, `src/generic/shell.ts` (prefix synthesis) | After mutation, a fetching build is gated in paranoid; `GOPROXY=off` build passes |
 | M12 | Fetch→execute correlation, out-of-band watch, docker digests, GOPRIVATE scoping | `src/generic/installers.ts`, `src/generic/github-actions.ts`, `src/index.ts` | §1.3's two-step edge closes; a scripted manifest write is attributed |
 | M13 | npm adapter | `src/adapters/npm/` | A postinstall-carrying lockfile change is gated with the script body shown; replay corpus npm cases pass |
@@ -150,6 +173,10 @@ actually happen; M14 keeps every earlier claim honest over time.
 ## 4. Non-goals, restated as engineering constraints
 
 - No new runtime dependencies (node built-ins only; Jev is `fetch`).
+- **Jev is not a dependency in any sense** — not an npm package, not a
+  required service, not a key the operator must hold. Deleting
+  `src/providers/jev/` leaves a fully working product; CI proves it by
+  running the suite once per milestone with the directory excluded.
 - No fifth decision; external evidence stays additive-only (invariant 12).
 - No weakening of checksum verification for any integration, ever.
 - No auto-approval path for headless workers (§2.8 stands).
@@ -163,7 +190,8 @@ This plan is wrong if, after M10–M14:
 1. A replay from the incident corpus passes the gate silently; or
 2. paranoid can execute uninspected third-party code; or
 3. the median ASK-per-session rises (fatigue metric) — more prompts would mean
-   the evidence work failed and the gate is training rubber-stamping.
+   the evidence work failed and the gate is training rubber-stamping; or
+4. any milestone test passes only with a Jev key or endpoint available.
 
 Each has a test or metric named above. That is the difference between this
 plan and a promise.

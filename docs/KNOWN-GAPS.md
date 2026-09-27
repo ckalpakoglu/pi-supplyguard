@@ -399,11 +399,20 @@ reads the code itself. Novel malware in an otherwise plausible package, the
 one attack none of those can name, passes every check SupplyGuard has and
 reaches the approval prompt looking clean.
 
-Human decision, 2026-09-27: close this with an **experimental external
-provider** built on Jev (TypeSafe AI's System One typed-decision model), and
-only that. The agreed shape:
+Human decision, 2026-09-27 (amended the same day): the baseline fix is a
+**local, deterministic, offline content scanner** — node built-ins only, no
+provider, no key — reporting file/line findings on egress or process execution
+reachable from package-init paths, environment harvesting, large encoded
+blobs, dynamic loading, and `//go:generate` directives inside the dependency.
+It is a heuristic for lazy/templated malware and says so; every rule ships
+with a false-positive corpus. Findings surface as an `ArtifactAnomaly` event;
+the human sees code, not a score.
 
-- a `src/providers/jev/` peer of the Socket provider, feeding the same
+**Jev** (TypeSafe AI's System One typed-decision model) is an *optional*
+external analyzer behind the same interface — one seat among several, never a
+dependency:
+
+- `src/providers/jev/` is a peer of the Socket provider, feeding the same
   `withExternalEvidence` channel — additive only, never a fifth decision;
 - configuration `jev.enabled`, **default off**, marked `experimental` in
   status and audit records;
@@ -418,9 +427,16 @@ only that. The agreed shape:
 - `JEV_API_KEY` never enters audit, logs or prompts; caching is per
   module@version and content hash; tests use an injected `fetch`.
 
+No gate keys on Jev or on any remote analyzer: "content inspected" means the
+local scanner ran over the artifact's actual source. The design is falsified
+by any test that passes only with a Jev key or endpoint available; CI runs the
+milestone suite once with `src/providers/jev/` excluded to prove it.
+Implementation is planned on `feature/zero-day-hardening`
+(`docs/PLAN-ZERO-DAY.md`).
+
 Deferred until the P0 hardening batch (vendored-source writes, §1.9, §1.10's
-audit trail) landed; those are done, so nothing blocks the provider but the
-decision to switch it on.
+audit trail) landed; those are done, so nothing blocks the scanner but the
+decision to schedule M10.
 
 ---
 
