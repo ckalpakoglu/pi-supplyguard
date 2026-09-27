@@ -33,6 +33,7 @@ import type {
   ToolCallEvent,
   ToolCallEventResult,
   ToolDefinition,
+  ToolResultEvent,
 } from "@earendil-works/pi-coding-agent";
 
 import { createGoAdapter } from "./adapters/go/index.ts";
@@ -125,6 +126,8 @@ export interface SupplyGuardRuntime {
     event: ToolCallEvent,
     ctx: ExtensionContext,
   ): Promise<ToolCallEventResult | undefined>;
+  /** A tool finished running; arms the expectation of an approved manifest writer. */
+  onToolResult(event: ToolResultEvent): void;
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
@@ -155,7 +158,10 @@ interface ProjectContext {
  */
 interface RepoSession {
   baseline?: ManifestSnapshot;
-  /** The previous call was allowed and legitimately rewrites tracked files. */
+  /**
+   * An approved manifest writer has finished running and its changes are not
+   * yet reconciled.
+   */
   expectManifestChange: boolean;
   /** Project questions already put to this human in this session. */
   readonly asked: Set<string>;
@@ -234,6 +240,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   // so a session asks the CLI about a given package once.
   const socketProvider = createSocketProvider(options.socket ?? {});
   const configWarningsAnnounced = new Set<string>();
+  // Approved manifest writers, by tool call id, that have not yet reported a
+  // result. See `handleToolCall` for why arming waits for `tool_result`.
+  const pendingManifestWriters = new Map<string, RepoSession>();
 
   function repoSession(repoRoot: string): RepoSession {
     const existing = sessions.get(repoRoot);
@@ -482,20 +491,37 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       ...(project.branch === undefined ? {} : { branch: project.branch }),
     };
 
-    const outcome = await evaluateToolCall(normalizeToolCall(event), engineCtx);
+    const call = normalizeToolCall(event);
+    const outcome = await evaluateToolCall(call, engineCtx);
 
     // SPEC 14.2: the baseline advances only when the observed state was
     // accepted. After a DENY it stays put, so the rejected mutation is
     // reconciled again on the next call instead of being inherited as clean.
     if (!outcome.blocked) session.baseline = outcome.manifestSnapshot;
+    // This call's reconciliation consumed any change that had already landed.
+    session.expectManifestChange = false;
     // SECURITY: only an operation a human APPROVED may vouch for the file
     // changes that follow it. "Not blocked" is far too weak a test -- it is
     // also true of every allowed call, so any command that merely looked like a
     // manifest writer would launder the next call's mutations. Every Go
     // operation that writes a manifest is a THIRD_PARTY_MUTATION and therefore
     // passes a human gate, so nothing legitimate is lost.
-    session.expectManifestChange =
-      outcome.expectsManifestChange && outcome.approval?.granted === true;
+    //
+    // The expectation arms only once the approved call has actually run, on its
+    // own `tool_result`. omp runs every `tool_call` hook of a batch before
+    // executing any of them, and Pi can execute tools in parallel, so arming
+    // here would let a later hook in the same batch clear the flag before the
+    // writer ran. A call that never ran -- blocked by another extension,
+    // denied by the host, aborted -- vouches for nothing.
+    if (outcome.expectsManifestChange && outcome.approval?.granted === true) {
+      if (call.toolCallId === undefined) {
+        // A host without call ids cannot report which call finished: keep the
+        // one-following-call semantics.
+        session.expectManifestChange = true;
+      } else {
+        pendingManifestWriters.set(call.toolCallId, session);
+      }
+    }
 
     for (const warning of outcome.warnings) {
       notify(ctx, `SupplyGuard: ${warning}`, "warning");
@@ -547,6 +573,16 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           reason: `SupplyGuard: internal error (${message}); failing closed.`,
         };
       }
+    },
+
+    onToolResult(event) {
+      // Never throws and never alters the host's result: bookkeeping only.
+      const id: unknown = event?.toolCallId;
+      if (typeof id !== "string") return;
+      const session = pendingManifestWriters.get(id);
+      if (session === undefined) return;
+      pendingManifestWriters.delete(id);
+      session.expectManifestChange = true;
     },
 
     /**
@@ -762,6 +798,7 @@ export default function supplyguard(pi: ExtensionAPI): void {
   const runtime = createRuntime();
 
   pi.on("tool_call", (event, ctx) => runtime.onToolCall(event, ctx));
+  pi.on("tool_result", (event) => runtime.onToolResult(event));
 
   const status: CommandDefinition = {
     description: "Show the effective SupplyGuard profile, configuration sources and state",

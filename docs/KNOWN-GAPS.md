@@ -30,8 +30,10 @@ fires `tool_call` *before* a tool runs, so the earliest SupplyGuard can observe
 a file change is the following call. The host does fire a `tool_result` event
 afterwards, but `ToolResultEventResult` cannot block — it only rewrites the
 result — so hooking it would move the observation earlier without moving the
-enforcement earlier. The gate is therefore "the agent cannot keep working after
-an unapproved manifest edit", not "the edit cannot happen".
+enforcement earlier. SupplyGuard hooks `tool_result` only to learn that an
+approved manifest writer has actually run (below). The gate is therefore "the
+agent cannot keep working after an unapproved manifest edit", not "the edit
+cannot happen".
 
 **The baseline is session-scoped.** The first tool call in a repository
 establishes it; whatever state the repository was already in is the starting
@@ -51,10 +53,17 @@ blocked" is not enough. Verifying that the observed diff matches the approved
 artifact is M4 work (the approval object already carries the artifact and
 version).
 
-The same expectation is attributed to ONE following call. If the host ever
-dispatches a batch of tool calls whose hooks all fire before any of them
-executes, the expectation is whatever the last hook in the batch set — which is
-conservative unless that last call is itself a manifest-writing Go command.
+The expectation arms on the approved call's own `tool_result`, not at hook time.
+omp runs every `tool_call` hook of one assistant message before executing any
+of them, and Pi can execute tools in parallel, so an expectation set at hook
+time would be overwritten by the next hook in the batch before the writer ran.
+Once armed, the next call's reconciliation consumes it. A writer that was
+blocked by another extension, denied at omp's approval gate or aborted produces
+no `tool_result` and vouches for nothing: whatever changed the manifest is
+re-gated. So is a write that lands after its call's `tool_result` — an `async`
+bash job or a named service still writing after the tool returned. That is
+conservative: a human is asked again, nothing is laundered. A host that
+supplies no call id keeps the one-following-call semantics.
 
 **A change made and reverted inside ONE tool call leaves nothing to
 reconcile** — reconciliation compares states, not history. M9 narrowed this

@@ -64,8 +64,15 @@ interface Harness {
   readonly repo: string;
   readonly home: string;
   readonly rec: Recorder;
-  /** Run one bash tool call; returns the block result, if any. */
+  /**
+   * Run one bash tool call on a sequential host: the hook, then (if it was
+   * not blocked) the tool's result. Returns the block result, if any.
+   */
   call(command: string): Promise<{ block?: boolean; reason?: string } | undefined>;
+  /** Only the `tool_call` hook, as omp does for every call of a batch first. */
+  hook(id: string, command: string): Promise<{ block?: boolean; reason?: string } | undefined>;
+  /** Only the `tool_result` of a call that ran. */
+  result(id: string): void;
   write(path: string, content: string): Promise<void>;
   /** Record the agent-side justification SPEC 11.2 requires. */
   justify(module: string, version: string): Promise<void>;
@@ -98,13 +105,24 @@ async function harness(
   });
 
   const ctx = context(repo, rec, options.hasUI ?? true);
+  let seq = 0;
+  const hook = (id: string, command: string) =>
+    runtime.onToolCall({ toolName: "bash", toolCallId: id, input: { command } }, ctx);
+  const result = (id: string) =>
+    runtime.onToolResult({ toolName: "bash", toolCallId: id, isError: false });
   return {
     runtime,
     repo,
     home,
     rec,
-    call: (command) =>
-      runtime.onToolCall({ toolName: "bash", toolCallId: "1", input: { command } }, ctx),
+    call: async (command) => {
+      const id = `seq-${++seq}`;
+      const outcome = await hook(id, command);
+      if (outcome === undefined) result(id);
+      return outcome;
+    },
+    hook,
+    result,
     write: (path, content) => writeFile(join(repo, path), content),
     justify: async (module, version) => {
       const result = await runtime.justifyTool(
@@ -234,6 +252,44 @@ test("the expectation from an approved operation does not carry past one call", 
   const prompts = h.rec.prompts.length;
   await h.call("ls");
   assert.equal(h.rec.prompts.length, prompts + 1, "the later edit is gated on its own");
+});
+
+// omp runs every hook of an assistant message before executing any call. The
+// approved writer's expectation must survive the hooks that follow it.
+test("an approved go get batched with other calls is reconciled once it has run", async () => {
+  const h = await harness({ answer: "Approve once" });
+  await h.write("go.mod", BASE_GO_MOD);
+
+  await h.justify("github.com/foo/bar", "v1.4.0");
+  assert.equal(await h.hook("a", "go get github.com/foo/bar@v1.4.0"), undefined);
+  assert.equal(await h.hook("b", "ls"), undefined);
+
+  // `a` runs and rewrites the manifest; `b` runs; then the next message.
+  await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v1.4.0"));
+  await h.write("go.sum", "github.com/foo/bar v1.4.0 h1:abc=\n");
+  h.result("a");
+
+  assert.equal(await h.call("ls"), undefined);
+  assert.equal(h.rec.prompts.length, 1, "no second prompt for the approved change");
+});
+
+// SECURITY: approval alone must not vouch for a change. A call blocked by
+// another extension or denied by the host never ran, so whatever changed the
+// manifest was something else.
+test("an approved manifest writer that never ran vouches for nothing", async () => {
+  const h = await harness({ answer: "Approve once" });
+  await h.write("go.mod", BASE_GO_MOD);
+
+  await h.justify("github.com/foo/bar", "v1.4.0");
+  await h.hook("a", "go get github.com/foo/bar@v1.4.0");
+  await h.write("go.mod", BASE_GO_MOD.replace("v1.2.3", "v1.4.0"));
+  // The approval consumed the one-shot justification; record it again so the
+  // re-gate reaches the human instead of stopping at a missing justification.
+  await h.justify("github.com/foo/bar", "v1.4.0");
+
+  await h.call("ls");
+  assert.equal(h.rec.prompts.length, 2, "the change is gated on its own");
+  assert.match(h.rec.prompts.at(-1) ?? "", /DependencyUpgrade/);
 });
 
 // SECURITY: headless has no human, so an unapproved mutation fails closed.

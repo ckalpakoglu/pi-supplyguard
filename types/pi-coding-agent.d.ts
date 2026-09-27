@@ -91,6 +91,22 @@ declare module "@earendil-works/pi-coding-agent" {
     | undefined
     | void;
 
+  /**
+   * Payload delivered to a `tool_result` handler, after a tool has executed
+   * (successfully or not). A call that was blocked, denied or aborted before
+   * execution produces no result event.
+   */
+  export interface ToolResultEvent {
+    readonly toolName: string;
+    readonly toolCallId: string;
+    readonly isError: boolean;
+  }
+
+  export type ToolResultHandler = (
+    event: ToolResultEvent,
+    ctx: ExtensionContext,
+  ) => void | Promise<void>;
+
   /** Text returned to the model from a tool. */
   export interface TextContent {
     type: "text";
@@ -151,6 +167,7 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ExtensionAPI {
     /** Handlers are awaited; blocking is guaranteed before tool execution. */
     on(event: "tool_call", handler: ToolCallHandler): void;
+    on(event: "tool_result", handler: ToolResultHandler): void;
     registerCommand(name: string, definition: CommandDefinition): void;
     registerTool(tool: ToolDefinition): void;
   }

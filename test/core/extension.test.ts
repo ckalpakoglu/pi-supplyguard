@@ -12,7 +12,7 @@ import { test } from "node:test";
 
 import supplyguard from "../../src/index.ts";
 
-test("the default export registers the tool_call hook, the commands and the tool", () => {
+test("the default export registers the hooks, the commands and the tool", () => {
   const events: string[] = [];
   const commands: string[] = [];
   const tools: { name: string; parameters: unknown }[] = [];
@@ -29,7 +29,7 @@ test("the default export registers the tool_call hook, the commands and the tool
     },
   } as never);
 
-  assert.deepEqual(events, ["tool_call"], "the gate is the whole point");
+  assert.deepEqual(events, ["tool_call", "tool_result"], "the gate is the whole point");
   assert.deepEqual(commands, ["supplyguard-status", "supplyguard-profile"]);
   assert.deepEqual(
     tools.map((t) => t.name),
