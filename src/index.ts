@@ -24,6 +24,7 @@
  * `docs/KNOWN-GAPS.md` §1.10.
  */
 
+import { createHash } from "node:crypto";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -128,8 +129,11 @@ export interface SupplyGuardRuntime {
     event: ToolCallEvent,
     ctx: ExtensionContext,
   ): Promise<ToolCallEventResult | undefined>;
-  /** A tool finished running; arms the expectation of an approved manifest writer. */
-  onToolResult(event: ToolResultEvent): void;
+  /**
+   * A tool finished running; arms the expectation of an approved manifest
+   * writer, and audits input revised after the gate (KNOWN-GAPS 1.10).
+   */
+  onToolResult(event: ToolResultEvent, ctx: ExtensionContext): Promise<void>;
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
@@ -203,6 +207,21 @@ async function resolveRepoRoot(cwd: string): Promise<string> {
   return cwd;
 }
 
+/**
+ * Stable JSON form, so the same input hashes the same on both sides of a
+ * tool call. Key order is the only thing normalized; contents are never read.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const entries = Object.entries(value)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 function uiPort(ctx: ExtensionContext): ApprovalUi {
   return {
     hasUI: ctx.hasUI,
@@ -245,6 +264,12 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   // Approved manifest writers, by tool call id, that have not yet reported a
   // result. See `handleToolCall` for why arming waits for `tool_result`.
   const pendingManifestWriters = new Map<string, RepoSession>();
+  // Hash of the input SupplyGuard evaluated, by tool call id, for calls that
+  // were allowed to run. Compared against the input the tool reports at
+  // `tool_result` (KNOWN-GAPS 1.10): a later handler that revised the input
+  // after the gate becomes visible instead of silent. Bounded, FIFO.
+  const rememberedInputs = new Map<string, string>();
+  const REMEMBERED_INPUT_LIMIT = 256;
 
   function repoSession(repoRoot: string): RepoSession {
     const existing = sessions.get(repoRoot);
@@ -525,6 +550,19 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       }
     }
 
+    // The input this gate actually evaluated -- not the normalized copy, and
+    // never the contents: only a hash is kept, and only until the call's result.
+    if (!outcome.blocked && typeof event.toolCallId === "string") {
+      const hash = createHash("sha256")
+        .update(canonicalJson(event.input ?? {}))
+        .digest("hex");
+      if (rememberedInputs.size >= REMEMBERED_INPUT_LIMIT) {
+        const oldest = rememberedInputs.keys().next().value;
+        if (oldest !== undefined) rememberedInputs.delete(oldest);
+      }
+      rememberedInputs.set(event.toolCallId, hash);
+    }
+
     for (const warning of outcome.warnings) {
       notify(ctx, `SupplyGuard: ${warning}`, "warning");
     }
@@ -577,14 +615,54 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       }
     },
 
-    onToolResult(event) {
+    async onToolResult(event, ctx) {
       // Never throws and never alters the host's result: bookkeeping only.
-      const id: unknown = event?.toolCallId;
-      if (typeof id !== "string") return;
-      const session = pendingManifestWriters.get(id);
-      if (session === undefined) return;
-      pendingManifestWriters.delete(id);
-      session.expectManifestChange = true;
+      try {
+        const id: unknown = event?.toolCallId;
+        if (typeof id !== "string") return;
+        const session = pendingManifestWriters.get(id);
+        if (session !== undefined) {
+          pendingManifestWriters.delete(id);
+          session.expectManifestChange = true;
+        }
+
+        // KNOWN-GAPS 1.10: a `tool_call` handler registered after SupplyGuard
+        // can rewrite input the gate already judged, and neither host re-runs
+        // hooks on the revision. The result carries what actually ran, so a
+        // mismatch can at least be made loud. A hash says nothing about the
+        // contents; a benign formatter extension can trip this, which is why
+        // the answer is a warning, not a block.
+        const expected = rememberedInputs.get(id);
+        const actual = event?.input;
+        if (expected === undefined || typeof actual !== "object" || actual === null) return;
+        rememberedInputs.delete(id);
+        const hash = createHash("sha256").update(canonicalJson(actual)).digest("hex");
+        if (hash === expected) return;
+
+        notify(
+          ctx,
+          `SupplyGuard: tool "${event.toolName}" ran with input that differs from what ` +
+            `SupplyGuard evaluated. A later handler may have revised it after the ` +
+            `gate; the revision was not re-checked.`,
+          "warning",
+        );
+        const project = await projectContext(ctx.cwd);
+        await writeAudit(project, {
+          timestamp: now().toISOString(),
+          kind: "input-revision",
+          profile: effective(project),
+          session: ctx.sessionManager.getSessionId(),
+          cwd: project.repoRoot,
+          headless: !ctx.hasUI,
+          tool: event.toolName,
+          message:
+            "tool ran with input differing from what SupplyGuard evaluated " +
+            "(expected sha256 " + expected.slice(0, 12) + ", got " + hash.slice(0, 12) + ")",
+          ...(project.branch === undefined ? {} : { branch: project.branch }),
+        });
+      } catch {
+        // An audit-of-last-resort must never break the host's result handling.
+      }
     },
 
     /**
@@ -800,7 +878,7 @@ export default function supplyguard(pi: ExtensionAPI): void {
   const runtime = createRuntime();
 
   pi.on("tool_call", (event, ctx) => runtime.onToolCall(event, ctx));
-  pi.on("tool_result", (event) => runtime.onToolResult(event));
+  pi.on("tool_result", (event, ctx) => runtime.onToolResult(event, ctx));
 
   const status: CommandDefinition = {
     description: "Show the effective SupplyGuard profile, configuration sources and state",

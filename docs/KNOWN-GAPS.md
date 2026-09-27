@@ -295,11 +295,13 @@ rewrite a command SupplyGuard has already approved.
 SupplyGuard never rewrites tool input itself — it only allows or blocks — but it
 cannot defend against a later handler that does.
 
-**Not closable in either host.** The mitigation would be to compare the input
-SupplyGuard approved against the input the tool actually received, which the
-`tool_result` event does carry — but that event fires after execution and cannot
-block, so it would turn a silent bypass into an audited one, not a prevented
-one. Documented in `src/index.ts`.
+**Not closable in either host — but no longer silent.** The `tool_result`
+event carries the input the tool actually received, so SupplyGuard hashes the
+input it evaluated and compares: a revision after the gate produces a warning
+and an `input-revision` audit record (hash prefixes only, never contents). A
+benign formatter extension can trip it, which is exactly why the answer is a
+warning and not a block. Hosts whose result event carries no input (omp's may
+not) cannot be compared at all.
 
 ### 1.11 The host API surface is hand-written and only spot-verified
 

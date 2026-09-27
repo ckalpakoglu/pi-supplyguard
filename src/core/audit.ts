@@ -146,6 +146,9 @@ export const AUDIT_RECORD_KINDS = [
   "project-decision",
   // The agent's stated rationale for a dependency (SPEC 11.2).
   "justification",
+  // A tool ran with different input than SupplyGuard evaluated (KNOWN-GAPS
+  // 1.10): a later handler revised it after the gate. Audited, not prevented.
+  "input-revision",
 ] as const;
 
 export type AuditRecordKind = (typeof AUDIT_RECORD_KINDS)[number];

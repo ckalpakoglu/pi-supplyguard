@@ -108,8 +108,11 @@ async function harness(
   let seq = 0;
   const hook = (id: string, command: string) =>
     runtime.onToolCall({ toolName: "bash", toolCallId: id, input: { command } }, ctx);
-  const result = (id: string) =>
-    runtime.onToolResult({ toolName: "bash", toolCallId: id, isError: false });
+  const result = (id: string, input?: Record<string, unknown>) =>
+    runtime.onToolResult(
+      { toolName: "bash", toolCallId: id, ...(input === undefined ? {} : { input }), isError: false },
+      ctx,
+    );
   return {
     runtime,
     repo,

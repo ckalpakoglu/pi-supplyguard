@@ -104,6 +104,11 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ToolResultEvent {
     readonly toolName: string;
     readonly toolCallId: string;
+    /**
+     * The input the tool actually received, AFTER every `tool_call` handler
+     * ran. Pi carries it; omp may not -- absent means "cannot be compared".
+     */
+    readonly input?: Record<string, unknown>;
     readonly isError: boolean;
   }
 
