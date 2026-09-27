@@ -68,6 +68,8 @@ test("wrappers and nesting do not hide the write", () => {
   assert.deepEqual(writes("sh -c 'sed -i s/a/b/ go.mod'"), ["go.mod"]);
   assert.deepEqual(writes("cd /repo && sed -i s/a/b/ go.mod"), ["go.mod"]);
   assert.deepEqual(writes("sudo sed -i s/a/b/ go.mod"), ["go.mod"]);
+  assert.deepEqual(writes("sh -c 'echo x' > go.mod"), ["go.mod"]);
+  assert.deepEqual(writes("eval echo x >> go.sum"), ["go.sum"]);
 });
 
 // NEGATIVE CORPUS: ordinary development must stay free.
@@ -75,6 +77,7 @@ test("ordinary file work is not a manifest write", () => {
   for (const command of [
     "sed -i s/a/b/ README.md",
     "echo hi > /tmp/notes.txt",
+    "sh -c 'echo hi' > /tmp/notes.txt",
     "cp go.mod /tmp/backup.mod",
     "cat go.mod",
     "grep require go.mod",

@@ -625,6 +625,27 @@ Pinned by *"a pseudo-version sorts after the base tag it extends"* and
 *"a pseudo-version bump over its base tag is an upgrade, not a downgrade"*;
 mutation-checked.
 
+### D17 — nested shells and declaration builtins hid checksum bypasses and manifest writes
+
+**Severity: high.** `unwrap()` returned early for `sh -c` / `eval` without a
+command, dropping the segment's prefix assignments, and `parseShell()` then had
+no command to attach the segment's redirections to. Declaration builtins were
+not parsed at all:
+
+```text
+GOSUMDB=off sh -c 'go build ./...'   ->  was: no ChecksumBypass
+export GOSUMDB=off; go build ./...   ->  was: no ChecksumBypass
+sh -c 'echo x' > go.mod              ->  was: no write recorded
+eval "go build" > go.sum             ->  was: no write recorded
+```
+
+Fixed by keeping the assignments on an empty-argv command when a nested script
+is handed off, parsing `NAME=value` arguments of `export`, `declare`,
+`typeset`, `readonly` and `local`, and emitting an empty-argv carrier for a
+segment's redirections when no command survives unwrapping.
+Pinned by *"a checksum bypass is caught however it is spelled"* and
+*"wrappers and nesting do not hide the write"*; both fail without the fix.
+
 ---
 
 ## 4. Release readiness

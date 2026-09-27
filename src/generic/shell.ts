@@ -103,6 +103,13 @@ const TRANSPARENT_WRAPPERS = new Set([
 /** Interpreters whose `-c` argument is another script to parse. */
 const SHELLS = new Set(["sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"]);
 
+/**
+ * Declaration builtins whose `NAME=value` arguments set variables that later
+ * commands inherit: `export GOSUMDB=off; go build` disables checksum checks as
+ * surely as a prefix assignment does.
+ */
+const DECLARATION_BUILTINS = new Set(["export", "declare", "typeset", "readonly", "local"]);
+
 /** Maximum nesting through `sh -c` / `eval`, to bound pathological input. */
 const MAX_DEPTH = 8;
 
@@ -523,8 +530,14 @@ function unwrap(words: readonly ShellWord[]): Unwrapped {
         } else {
           nested.push(script.text);
         }
-        return { nested, opaque, notes };
+        return {
+          ...(assignments.length === 0 ? {} : { command: { assignments, argv: [] } }),
+          nested,
+          opaque,
+          notes,
+        };
       }
+      // `GOSUMDB=off sh` without `-c`: the assignments still matter.
       break;
     }
 
@@ -534,10 +547,36 @@ function unwrap(words: readonly ShellWord[]): Unwrapped {
       if (parts.some((w) => w.expanded)) {
         opaque = true;
         notes.push("eval of a dynamically built string");
-        return { nested, opaque, notes };
+        return {
+          ...(assignments.length === 0 ? {} : { command: { assignments, argv: [] } }),
+          nested,
+          opaque,
+          notes,
+        };
       }
       nested.push(parts.map((w) => w.text).join(" "));
-      return { nested, opaque, notes };
+      return {
+        ...(assignments.length === 0 ? {} : { command: { assignments, argv: [] } }),
+        nested,
+        opaque,
+        notes,
+      };
+    }
+
+    if (DECLARATION_BUILTINS.has(name)) {
+      // Flags (`-x`, `-r`) are skipped; argv stays intact so the command
+      // itself is still visible (`export GOSUMDB=off`).
+      for (const word of argv.slice(1)) {
+        if (word.text.startsWith("-")) continue;
+        const match = ASSIGNMENT.exec(word.text);
+        if (match === null) continue;
+        assignments.push({
+          name: match[1] ?? "",
+          value: match[2] ?? "",
+          expanded: word.expanded,
+        });
+      }
+      break;
     }
 
     break;
@@ -580,6 +619,15 @@ export function parseShell(command: string, depth = 0): ShellParse {
         ...result.command,
         ...(segment.precededBy === undefined ? {} : { precededBy: segment.precededBy }),
         ...(segment.writes.length === 0 ? {} : { writes: segment.writes }),
+      });
+    } else if (segment.writes.length > 0) {
+      // `sh -c 'echo x' > go.mod`: the nested script is parsed separately, but
+      // the redirect belongs to this segment and must not be lost with it.
+      commands.push({
+        assignments: [],
+        argv: [],
+        ...(segment.precededBy === undefined ? {} : { precededBy: segment.precededBy }),
+        writes: segment.writes,
       });
     }
 

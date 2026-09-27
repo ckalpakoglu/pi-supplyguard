@@ -153,8 +153,27 @@ test("a checksum bypass is caught however it is spelled", () => {
     "cd x && GOSUMDB=off go test ./...",
     "go env -w GOSUMDB=off",
     "sh -c 'go env -w GOSUMDB=off'",
+    "GOSUMDB=off sh -c 'go build ./...'",
+    "GOSUMDB=off bash -lc 'go test ./...'",
+    "GONOSUMDB=example.com eval go build ./...",
+    "export GOSUMDB=off; go build ./...",
+    "declare -x GOSUMDB=off && go build ./...",
+    "readonly GOFLAGS=-insecure; go build ./...",
   ]) {
     assertDenied(command);
+  }
+});
+
+test("declaring an ordinary variable is not a checksum bypass", () => {
+  for (const command of [
+    "export PATH=/usr/local/go/bin:/usr/bin; go build ./...",
+    "local FOO=bar; go build ./...",
+  ]) {
+    const analysis = analyzeCommand(command);
+    assert.ok(
+      !analysis.operations.some((op) => op.eventClass === "ChecksumBypass"),
+      `must not be a checksum bypass: ${command}`,
+    );
   }
 });
 
