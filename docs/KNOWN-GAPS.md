@@ -253,18 +253,20 @@ A tracked file larger than 4 MiB (`MAX_TRACKED_BYTES`) is hashed but not
 retained, so a change to it is reported as an unclassifiable manifest mutation.
 It is still gated; it just cannot be explained.
 
-Vendored **source** is not tracked, only `vendor/modules.txt`, which is what
-SPEC §14.1 lists. With vendoring enforced the build compiles from `vendor/`, so
-editing a vendored `.go` file changes nothing the snapshot watches. M9 covers
-the command shapes — `sed -i vendor/…` and friends are gated like any other
-write to a tracked path only if the path is tracked, and individual vendored
-sources are not — so an editor aimed at vendored source is still unseen.
+Vendored **source** is not snapshotted, only `vendor/modules.txt`, which is
+what SPEC §14.1 lists. With vendoring enforced the build compiles from
+`vendor/`, so editing a vendored `.go` file changes nothing the snapshot
+watches. Direct writes into the tree are therefore gated by **command shape**
+instead: the Go adapter exposes `vendor/` as a write-guard prefix, and a
+`sed -i vendor/…`, `cp … vendor/…` or redirection into it is a `VendorDrift`
+mutation before it runs. `go mod vendor` names no file operand, so the
+legitimate refresher is not caught. Hashing a whole vendor tree on every tool
+call remains the "obvious" fix and a bad one: thousands of files per call, to
+catch a case an attacker reaches only after already having write access to the
+repository. What the prefix gate still does not see is a write made from
+inside a script the command line does not name.
 
-Hashing a whole vendor tree on every tool call is the obvious fix and a bad
-one: thousands of files per call, to catch a case an attacker reaches only
-after already having write access to the repository.
-
-### 1.9 `go generate` is treated as merely capable
+### 1.9 `go generate` asks in every profile
 
 ```text
 go generate ./...  ->  THIRD_PARTY_CAPABLE

@@ -47,6 +47,7 @@ import {
   GO_SENSITIVE_PATHS,
   GO_SUM,
   VENDOR_MODULES,
+  VENDOR_PREFIX,
 } from "./project.ts";
 import { lookupVulnerabilities, type OsvOptions } from "./osv.ts";
 import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
@@ -323,6 +324,15 @@ export function createGoAdapter(
     },
 
     sensitivePaths: () => GO_SENSITIVE_PATHS,
+
+    /**
+     * Vendored SOURCE is the one Go input that is executed by enforced builds
+     * but not snapshotted (hashing a vendor tree per call costs more than the
+     * attacker's path is worth). Direct writes into it are gated by command
+     * shape instead; `go mod vendor` itself names no file operand, so the
+     * legitimate refresher is not caught.
+     */
+    writeGuardPrefixes: () => [VENDOR_PREFIX],
 
     inspectFileMutation: (mutation: FileMutation) => inspectGoFileMutation(mutation),
 

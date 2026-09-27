@@ -24,6 +24,8 @@ export const GO_SUM = "go.sum";
 export const GO_WORK = "go.work";
 export const GO_WORK_SUM = "go.work.sum";
 export const VENDOR_MODULES = "vendor/modules.txt";
+/** Write-guard prefix for vendored source (see the Go adapter). */
+export const VENDOR_PREFIX = "vendor/";
 
 /** SPEC 14.1 -- the Go files whose content SupplyGuard tracks. */
 export const GO_SENSITIVE_PATHS: readonly string[] = [

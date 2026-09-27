@@ -28,6 +28,13 @@ function writes(command: string): string[] {
   return inspectSensitiveWrites(parseShell(command).commands, WATCHED).map((e) => e.artifact ?? "");
 }
 
+/** Events for writes under the vendor guard prefix (`vendor/`). */
+function vendorEvents(command: string): string[] {
+  return inspectSensitiveWrites(parseShell(command).commands, [], ["vendor/"]).map(
+    (e) => `${e.eventClass}:${e.artifact ?? ""}`,
+  );
+}
+
 test("a redirection into a tracked manifest is a write", () => {
   assert.deepEqual(writes("echo 'require evil v1' >> go.mod"), ["go.mod"]);
   assert.deepEqual(writes("printf x > go.sum"), ["go.sum"]);
@@ -105,6 +112,30 @@ test("go's own subcommands are not matched, yet go is not a way through", () => 
   assert.deepEqual(writes("go mod tidy"), []);
   assert.deepEqual(writes("go list -m all > go.sum"), ["go.sum"]);
   assert.deepEqual(writes("go env > go.mod"), ["go.mod"]);
+});
+
+// Vendored source is executed by enforced builds but not snapshotted; the
+// command shape is the only gate it gets (KNOWN-GAPS 1.8).
+test("a write into vendored source is vendor drift", () => {
+  for (const command of [
+    "sed -i s/a/b/ vendor/github.com/foo/bar/bar.go",
+    "cp evil.go vendor/golang.org/x/tools/stringer.go",
+    "echo 'package evil' > vendor/github.com/foo/bar/bar.go",
+    "mv evil.go sub/vendor/other/pkg/pkg.go",
+  ]) {
+    assert.deepEqual(vendorEvents(command), [`VendorDrift:vendor/`], command);
+  }
+});
+
+test("reading vendored source, or the refresher, is not a write", () => {
+  for (const command of [
+    "cat vendor/github.com/foo/bar/bar.go",
+    "sed -i s/a/b/ vendor_notes.txt",
+    "go mod vendor",
+    "gofmt -l vendor/",
+  ]) {
+    assert.deepEqual(vendorEvents(command), [], command);
+  }
 });
 
 test("nothing is reported when no paths are tracked", () => {

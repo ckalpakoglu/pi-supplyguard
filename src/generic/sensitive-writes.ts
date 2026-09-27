@@ -51,10 +51,16 @@ function editsInPlace(command: SimpleCommand): boolean {
  * Matching is by path suffix so `./go.mod` and `sub/go.mod` are recognized;
  * a repository-relative watched path is matched against the tail of the
  * argument, which is what a shell command actually carries.
+ *
+ * `prefixes` are directory guards (e.g. `vendor/`): a write to any path under
+ * one is reported against the prefix itself. Vendored source is not snapshotted
+ * (§1.8 records why hashing a vendor tree per call is a bad trade), so the
+ * command shape is the only place it can be caught.
  */
 export function writtenPaths(
   command: SimpleCommand,
   watched: readonly string[],
+  prefixes: readonly string[] = [],
 ): readonly string[] {
   const candidates: string[] = [...(command.writes ?? [])];
   const head = command.argv[0];
@@ -87,6 +93,11 @@ export function writtenPaths(
         hits.add(path);
       }
     }
+    for (const prefix of prefixes) {
+      if (normalized.startsWith(prefix) || normalized.includes(`/${prefix}`)) {
+        hits.add(prefix);
+      }
+    }
   }
   return [...hits].sort();
 }
@@ -97,12 +108,17 @@ export function writtenPaths(
  * Classified as a mutation and gated: whatever the file ends up containing, the
  * decision to rewrite a dependency manifest outside the package manager is a
  * trust decision, and it is being made here rather than discovered later.
+ *
+ * A write under a guard prefix is a VendorDrift by construction: the tree can
+ * no longer be assumed to match the versions go.mod pins, and nothing will
+ * reconcile it later because vendored source is not snapshotted.
  */
 export function inspectSensitiveWrites(
   commands: readonly SimpleCommand[],
   watched: readonly string[],
+  prefixes: readonly string[] = [],
 ): readonly SupplyChainEvent[] {
-  if (watched.length === 0) return [];
+  if (watched.length === 0 && prefixes.length === 0) return [];
 
   const events: SupplyChainEvent[] = [];
   const reported = new Set<string>();
@@ -115,19 +131,34 @@ export function inspectSensitiveWrites(
     // file as an operand, so they are not matched here anyway -- but
     // `go list -m all > go.sum` is a redirection into a manifest like any
     // other, and exempting the tool would have made it the one way through.
-    for (const path of writtenPaths(command, watched)) {
+    for (const path of writtenPaths(command, watched, prefixes)) {
       if (reported.has(path)) continue;
       reported.add(path);
-      events.push({
-        eventClass: "LockfileMutation",
-        ecosystem: GENERIC_ECOSYSTEM,
-        classification: "THIRD_PARTY_MUTATION",
-        artifact: path,
-        summary:
-          `\`${tool}\` writes ${path} directly, outside the package manager. A dependency ` +
-          `manifest rewritten this way never passes the command gate, and a change that is ` +
-          `reverted before the next tool call would leave no trace at all.`,
-      });
+      const vendor = prefixes.includes(path);
+      events.push(
+        vendor
+          ? {
+              eventClass: "VendorDrift",
+              ecosystem: GENERIC_ECOSYSTEM,
+              classification: "THIRD_PARTY_MUTATION",
+              artifact: path,
+              summary:
+                `\`${tool}\` writes vendored source under ${path} directly. The vendor ` +
+                `tree is what enforced builds compile from, and a hand-edited file in ` +
+                `it no longer matches the version go.mod pins -- with no checksum or ` +
+                `snapshot to catch it later.`,
+            }
+          : {
+              eventClass: "LockfileMutation",
+              ecosystem: GENERIC_ECOSYSTEM,
+              classification: "THIRD_PARTY_MUTATION",
+              artifact: path,
+              summary:
+                `\`${tool}\` writes ${path} directly, outside the package manager. A dependency ` +
+                `manifest rewritten this way never passes the command gate, and a change that is ` +
+                `reverted before the next tool call would leave no trace at all.`,
+            },
+      );
     }
   }
 

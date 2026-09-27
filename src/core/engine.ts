@@ -454,7 +454,13 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   const now = ctx.now ?? (() => new Date());
   // --- SPEC 14: reconcile what happened since the previous tool call --------
   const watched = ctx.registry.sensitivePaths();
-  const adapterCtx = { repoRoot: ctx.repoRoot, profile: ctx.profile, watchedPaths: watched };
+  const writePrefixes = ctx.registry.writeGuardPrefixes();
+  const adapterCtx = {
+    repoRoot: ctx.repoRoot,
+    profile: ctx.profile,
+    watchedPaths: watched,
+    ...(writePrefixes.length === 0 ? {} : { writeGuardPrefixes: writePrefixes }),
+  };
   const manifestSnapshot =
     watched.length === 0 ? EMPTY_SNAPSHOT : await readManifestSnapshot(ctx.repoRoot, watched);
   const mutations =

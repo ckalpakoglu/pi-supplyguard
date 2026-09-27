@@ -33,11 +33,12 @@ export interface AdapterContext {
    * both halves of that.
    */
   readonly watchedPaths: readonly string[];
+  /** Directory prefixes whose contents are write-guarded but not snapshotted. */
+  readonly writeGuardPrefixes?: readonly string[];
 }
 
 /**
  * Context for the project-scoped hooks.
- *
  * `decisions` holds the answers to this adapter's project-level questions
  * (SPEC 9.2, 13.3), keyed by request id -- opaque strings to the core. A
  * missing key means the question has not been answered, and an adapter must
@@ -178,12 +179,19 @@ export interface EcosystemAdapter {
     version: string,
     ctx: AdapterContext,
   ): Promise<VulnerabilityLookup>;
+
+  /**
+   * Directory prefixes (with trailing slash, e.g. `vendor/`) whose contents
+   * must not be written directly. Unlike `sensitivePaths`, these are NOT
+   * snapshotted: guarding a tree by hashing it on every call costs more than
+   * the attacker's path is worth. The command shape is the gate.
+   */
+  writeGuardPrefixes?(): readonly string[];
 }
 
 /**
- * Project-state inspection sees how the current call was classified.
  *
- * SPEC 9.3 gates on it: Paranoid denies a DEPENDENCY-CHANGING operation when
+ * Project-state inspection sees how the current call was classified.
  * no vendor tree exists, rather than denying every command in the repository.
  */
 export interface ProjectStateContext extends ProjectDecisionContext {
@@ -230,6 +238,8 @@ export interface AdapterRegistry {
   ): Promise<RegistryInspection>;
   /** Union of every adapter's sensitive paths, de-duplicated and sorted. */
   sensitivePaths(): readonly string[];
+  /** Union of every adapter's write-guard directory prefixes, sorted. */
+  writeGuardPrefixes(): readonly string[];
   /** Classify observed file mutations through every adapter. */
   inspectFileMutations(
     mutations: readonly FileMutation[],
@@ -349,6 +359,14 @@ export function createAdapterRegistry(
         for (const path of adapter.sensitivePaths?.() ?? []) paths.add(path);
       }
       return [...paths].sort();
+    },
+
+    writeGuardPrefixes() {
+      const prefixes = new Set<string>();
+      for (const adapter of registered.values()) {
+        for (const prefix of adapter.writeGuardPrefixes?.() ?? []) prefixes.add(prefix);
+      }
+      return [...prefixes].sort();
     },
 
     async inspectFileMutations(mutations, ctx) {

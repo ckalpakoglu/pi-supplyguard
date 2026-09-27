@@ -51,7 +51,11 @@ export function createGenericAdapter(): EcosystemAdapter {
 
       const parsed = parseShell(command);
       const pipelines = inspectInstallers(parsed.commands);
-      const writes = inspectSensitiveWrites(parsed.commands, ctx.watchedPaths);
+      const writes = inspectSensitiveWrites(
+        parsed.commands,
+        ctx.watchedPaths,
+        ctx.writeGuardPrefixes ?? [],
+      );
       const events = [
         ...pipelines,
         ...writes,
