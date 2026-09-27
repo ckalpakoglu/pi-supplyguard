@@ -15,11 +15,13 @@
  *
  * KNOWN BYPASS VECTOR (documented, not fixed in M1)
  * -------------------------------------------------
- * The Pi host lets a `tool_call` handler mutate `event.input`, and mutations
- * are NOT re-validated. A handler registered after SupplyGuard could therefore
- * rewrite a command that SupplyGuard already approved. SupplyGuard itself never
- * rewrites tool input; it only allows or blocks. Defending against a hostile
- * co-installed extension is out of scope for M1 and is tracked for M9.
+ * The Pi host lets a `tool_call` handler mutate `event.input`, and omp lets a
+ * handler replace it by returning `input` (last wins). Neither host re-runs
+ * extension hooks on the revised input. A handler registered after SupplyGuard
+ * could therefore rewrite a command that SupplyGuard already approved.
+ * SupplyGuard itself never rewrites tool input; it only allows or blocks.
+ * Defending against a hostile co-installed extension is out of scope; see
+ * `docs/KNOWN-GAPS.md` §1.10.
  */
 
 import { access } from "node:fs/promises";
@@ -829,6 +831,11 @@ export default function supplyguard(pi: ExtensionAPI): void {
         `operations, and each justification covers one module at one version for one run.`,
     ],
     parameters: JUSTIFY_TOOL_PARAMETERS,
+    // omp: keep it a top-level tool rather than an `xd://` device, and do not
+    // put it behind the exec-tier approval prompt -- it records rationale only
+    // and grants nothing.
+    loadMode: "essential",
+    approval: "read",
     execute: (_toolCallId, params, _signal, _onUpdate, ctx) => runtime.justifyTool(params, ctx),
   };
 

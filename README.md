@@ -201,6 +201,17 @@ Installed packages can be listed with `pi list` and enabled/disabled with
 `pi config`. Pi packages run with full system access — review the source
 before installing, as you should for any supply-chain tool.
 
+omp (oh-my-pi) is supported from the same code: it reads the entry point from
+`package.json` under `omp.extensions` (falling back to `pi.extensions`). To try
+it once:
+
+```bash
+omp -e /absolute/path/to/pi-supplyguard/src/index.ts
+```
+
+omp-specific tool surfaces and what each one gets are listed in
+[`docs/KNOWN-GAPS.md` §1.14](docs/KNOWN-GAPS.md).
+
 Requirements: Node.js with native TypeScript type-stripping (the extension
 ships as `.ts` and is loaded directly by Pi).
 

@@ -14,9 +14,12 @@
  * upstream `.d.ts` files here. Widen this surface only as SupplyGuard genuinely
  * starts using more of the host API, and keep it hand-written and reviewable.
  *
- * Verified against the host's `dist/core/extensions/types.d.ts`. If the host
- * API diverges from these declarations, fix this file rather than casting at
- * the call site.
+ * Verified against Pi 0.84.4 `dist/core/extensions/types.d.ts` and omp 18.3.4
+ * `packages/coding-agent/src/extensibility/extensions/types.ts`. The module
+ * name stays `@earendil-works/pi-coding-agent` for both hosts: omp rewrites
+ * that specifier to its own host copy, and every import of it is type-only.
+ * If either host API diverges from these declarations, fix this file rather
+ * than casting at the call site.
  */
 declare module "@earendil-works/pi-coding-agent" {
   /** How the session is being driven. `json`/`print` have no interactive UI. */
@@ -66,8 +69,10 @@ declare module "@earendil-works/pi-coding-agent" {
     readonly toolName: string;
     readonly toolCallId?: string;
     /**
-     * Tool arguments. MUTABLE by design in the host: a handler may rewrite the
-     * call. SupplyGuard never does -- see the bypass note in `src/index.ts`.
+     * Tool arguments. MUTABLE by design in Pi: a handler may rewrite the call.
+     * omp handlers revise it by returning `input` instead (last wins; handlers
+     * do not see each other's revisions). SupplyGuard does neither -- see the
+     * bypass note in `src/index.ts`.
      */
     input: Record<string, unknown>;
   }
@@ -150,6 +155,16 @@ declare module "@earendil-works/pi-coding-agent" {
     /** Guideline bullets appended to the system prompt while this tool is active. */
     promptGuidelines?: string[];
     parameters: ToolParameterSchema;
+    /**
+     * omp only; Pi ignores it. `essential` keeps the tool top-level instead of
+     * behind omp's `xd://` discovery (the default for extension tools).
+     */
+    loadMode?: "essential" | "discoverable";
+    /**
+     * omp only; Pi ignores it. Approval tier omp applies before running the
+     * tool; extension tools default to `exec`.
+     */
+    approval?: "read" | "write" | "exec";
     execute(
       toolCallId: string,
       params: unknown,

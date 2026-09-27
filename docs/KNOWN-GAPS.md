@@ -282,13 +282,16 @@ assessed the false-positive cost on repositories that generate routinely.
 ### 1.10 A hostile co-installed extension can rewrite an approved command
 
 The Pi host allows a `tool_call` handler to mutate `event.input`, and does not
-re-validate it afterwards. An extension registered after SupplyGuard could
-therefore rewrite a command SupplyGuard has already approved.
+re-validate it afterwards. omp's form is a handler returning a revised `input`:
+the last one wins, handlers do not see each other's revisions, and omp
+re-resolves its own approval tier on the revised input but does not re-run
+extension hooks. Either way, an extension registered after SupplyGuard could
+rewrite a command SupplyGuard has already approved.
 
 SupplyGuard never rewrites tool input itself — it only allows or blocks — but it
 cannot defend against a later handler that does.
 
-**Not closable in this host.** The mitigation would be to compare the input
+**Not closable in either host.** The mitigation would be to compare the input
 SupplyGuard approved against the input the tool actually received, which the
 `tool_result` event does carry — but that event fires after execution and cannot
 block, so it would turn a silent bypass into an audited one, not a prevented
@@ -301,13 +304,19 @@ deliberately **not installed**: pulling ~136 transitive packages into a
 supply-chain-security tool is the outcome this project exists to prevent.
 
 `types/pi-coding-agent.d.ts` is therefore hand-written, and covers only the
-surface `src/index.ts` uses. During M3 it was checked member by member against a
-host installed globally on the development workstation (0.84.4): `ExtensionAPI.on`,
-`registerCommand`, `ToolCallEvent`, `ToolCallEventResult`, `ExtensionContext`
-(`cwd`, `hasUI`, `mode`, `ui`, `sessionManager`), `ExtensionUI` and
-`sessionManager.getSessionId()` all match. Two deliberate divergences remain,
-both safe for a caller: our `select` accepts a `readonly string[]`, and our
-command `handler` may return `void` as well as a promise.
+surface `src/index.ts` uses. It is checked member by member against both hosts
+installed on the development workstation: Pi 0.84.4 and omp 18.3.4.
+`ExtensionAPI.on` (`tool_call`, `tool_result`), `registerCommand`,
+`registerTool`, `ToolCallEvent`, `ToolCallEventResult`, `ToolResultEvent`
+(`toolName`, `toolCallId`, `isError`), `ExtensionContext` (`cwd`, `hasUI`,
+`mode`, `ui`, `sessionManager`), `ExtensionUI` and
+`sessionManager.getSessionId()` match in both. `ToolDefinition.loadMode` and
+`ToolDefinition.approval` are omp-only fields that Pi ignores. omp loads the
+package through `package.json#omp.extensions` and rewrites the
+`@earendil-works/pi-coding-agent` specifier to its own host copy; every import
+of it is type-only. Two deliberate divergences remain, both safe for a caller:
+our `select` accepts a `readonly string[]`, and our command `handler` may return
+`void` as well as a promise.
 
 Consequences that stand:
 
@@ -344,6 +353,37 @@ Running `go` as another user is arguably worth flagging in its own right.
 never more permissive than the file on disk. Marked `ponytail:` in
 `src/index.ts`; switch to mtime comparison only if the reload ever shows up in a
 profile.
+
+### 1.14 omp-specific surfaces
+
+omp (oh-my-pi) exposes tools Pi does not. What each one gets:
+
+**Inspected before execution.**
+
+- `bash` `env` and `cwd`: the call is analyzed as `NAME='value'` lines and
+  `cd 'dir'` followed by the command, so `{ command: "go build ./...", env:
+  { GOSUMDB: "off" } }` is the checksum bypass it is. Values reach the parser
+  only, never prompts or audit records. Pinned by `test/core/omp-host.test.ts`.
+- `write` to `proc://<id>`: the content is stdin for a running process (a
+  shell service), so it is analyzed as a command. A `write` to any other path is
+  a file write, never a command.
+- Nested `xd://` device dispatch emits its own `tool_call`.
+- `tool.<name>()` from an `eval` cell emits its own `tool_call`: verified end to
+  end with `tool.bash({ command: "go get github.com/google/uuid@latest" })`,
+  which was denied and audited.
+
+**Retrospective only (§1.1 reconciliation on the next call).**
+
+- `eval` cells themselves, including `%pip install` and `%bun add`: the code is
+  not a shell command and is not parsed.
+- `write`, `edit`, `ast_edit`, `lsp` and `xd://` device writes to tracked
+  files. Human decision: parity with Pi's file tools, no pre-landing gate.
+- Patches merged back from isolated `task` subagents: reconciled on the Chief's
+  next call.
+- `debug` launches: unclassified, like any non-shell tool.
+
+omp subagents run headless, so a dependency `ASK` in a subagent fails closed
+and the Chief-only dependency rule (§2.8) holds.
 
 ---
 
