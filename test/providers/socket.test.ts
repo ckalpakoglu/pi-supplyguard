@@ -143,6 +143,39 @@ test("a score document is read into alerts", () => {
   }
 });
 
+// Seen against the real CLI: `transitively` repeats the package's own alerts,
+// and the prompt read "4 alert(s): networkAccess, usesEval, networkAccess,
+// usesEval". A different severity under the same name is a different finding.
+test("an alert repeated in the transitive section is reported once", () => {
+  const alert = (name: string, severity: string) => ({ name, severity, category: "supplyChainRisk" });
+  const result = parseScoreDocument(
+    JSON.stringify({
+      ok: true,
+      data: {
+        self: { score: { overall: 100 }, alerts: [alert("networkAccess", "middle"), alert("usesEval", "middle")] },
+        transitively: {
+          alerts: [
+            alert("networkAccess", "middle"),
+            alert("usesEval", "middle"),
+            alert("usesEval", "high"),
+          ],
+        },
+      },
+    }),
+  );
+  assert.equal(result.kind, "scanned");
+  if (result.kind === "scanned") {
+    assert.deepEqual(
+      result.alerts.map((a) => [a.name, a.severity]),
+      [
+        ["networkAccess", "moderate"],
+        ["usesEval", "moderate"],
+        ["usesEval", "high"],
+      ],
+    );
+  }
+});
+
 test("Socket's own severity spelling is normalized", () => {
   assert.equal(readAlertSeverity("middle"), "moderate");
   assert.equal(readAlertSeverity("critical"), "critical");

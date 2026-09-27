@@ -85,6 +85,10 @@ export function parseScoreDocument(text: string): SocketArtifactResult {
   }
 
   const alerts: SocketAlert[] = [];
+  // `transitively` repeats the package's own alerts (and one dependency's
+  // alert may repeat another's), so a name at a severity is reported once.
+  // The worst severity survives, which is all a decision reads.
+  const seen = new Set<string>();
   let overall: number | undefined;
 
   for (const section of ["self", "transitively"] as const) {
@@ -98,10 +102,12 @@ export function parseScoreDocument(text: string): SocketArtifactResult {
         if (typeof alert !== "object" || alert === null) continue;
         const name = (alert as Record<string, unknown>)["name"];
         if (typeof name !== "string" || name === "") continue;
-        alerts.push({
-          name: name.slice(0, 120),
-          severity: readAlertSeverity((alert as Record<string, unknown>)["severity"]),
-        });
+        const alertName = name.slice(0, 120);
+        const severity = readAlertSeverity((alert as Record<string, unknown>)["severity"]);
+        const key = `${alertName}\u0000${severity}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        alerts.push({ name: alertName, severity });
       }
     }
 

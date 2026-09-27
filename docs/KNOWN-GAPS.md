@@ -718,6 +718,23 @@ Pinned by *"an installed Socket CLI passes its health check and scores an
 artifact"* (fails without the fix) and *"only SupplyGuard's own flags pass the
 runner, and only exactly"*.
 
+### D19 — an alert repeated in Socket's transitive section was counted twice
+
+**Severity: low (reporting only).** `socket package score --json` repeats the
+package's own alerts under `transitively`, and the parser appended both
+sections unfiltered. Against the real CLI (1.1.180) the approval prompt read:
+
+```text
+Socket reported 4 alert(s) … networkAccess, usesEval, networkAccess, usesEval
+```
+
+No decision changed — the worst severity was the same — but a prompt that
+double-counts teaches the human to skim it. Fixed by reporting a name at a
+given severity once; the same name at a different severity stays a separate
+alert, so the worst severity is never lost. Found while testing D18's fix
+against the installed CLI.
+Pinned by *"an alert repeated in the transitive section is reported once"*.
+
 ---
 
 ## 4. Release readiness
