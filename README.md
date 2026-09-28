@@ -286,6 +286,8 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | `go generate` (runs `//go:generate` directives from any source file) | Ask | Ask | Ask |
 | Content-scan finding in dependency source (`ArtifactAnomaly`) | Ask | Ask | Ask |
 | Dependency whose source is not locally resolvable yet | Ask + banner | Ask + banner | Ask + banner (build gated until scanned, M11) |
+| `-mod=mod` build with a vendor tree present | Deny | Deny | Deny |
+| Paranoid build before vendored code is content-scanned | — | — | Scanned first; findings ask |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
 | Tracked manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
 | Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |

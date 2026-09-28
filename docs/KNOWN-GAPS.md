@@ -443,8 +443,20 @@ Implementation is planned on `feature/zero-day-hardening`
 (`docs/PLAN-ZERO-DAY.md`).
 
 The M10 scanner and the optional Jev analyzer shipped on
-`feature/zero-day-hardening` (`docs/PLAN-ZERO-DAY.md`); what remains open is
-the M11 depth behind them.
+`feature/zero-day-hardening` (`docs/PLAN-ZERO-DAY.md`), and M11 adds the depth
+behind them:
+
+- **Hermetic gate:** `-mod=mod` on a build-shaped command with a vendor tree
+  present is denied in every profile — it fetches from the network instead of
+  compiling the reviewed tree, un-enforcing the vendor model one flag early.
+  Building from the tree, including `GOFLAGS=-mod=vendor GOPROXY=off` spells,
+  stays free.
+- **Vendor quarantine (paranoid):** before the first build-shaped command that
+  would compile vendored code, every vendored module is content-scanned —
+  lazily, once per process, from the vendor tree itself. A finding becomes an
+  `ArtifactAnomaly` the human reads before the code runs; a clean module is
+  scanned once and stops costing anything. Session-scoped by design, like the
+  manifest baseline: a restart re-scans on the next build.
 
 ---
 

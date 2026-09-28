@@ -113,6 +113,8 @@ export interface GoAnalysis {
   readonly writesManifests: boolean;
   /** True when the command refreshes the vendor tree (`go mod vendor`). */
   readonly refreshesVendor: boolean;
+  /** Every prefix assignment in the command, for the hermetic-build gate. */
+  readonly assignments: readonly ShellAssignment[];
 }
 
 const IRRELEVANT: GoAnalysis = {
@@ -121,9 +123,8 @@ const IRRELEVANT: GoAnalysis = {
   notes: [],
   writesManifests: false,
   refreshesVendor: false,
+  assignments: [],
 };
-
-
 
 /** Go subcommands that cannot introduce or fetch third-party code. */
 const INERT_SUBCOMMANDS = new Set(["version", "doc", "help", "fix", "clean", "tool", "bug"]);
@@ -495,11 +496,13 @@ export function analyzeCommand(command: string): GoAnalysis {
   const notes: string[] = [...parsed.notes];
   let sawGo = false;
   let capable = false;
+  const assignments: ShellAssignment[] = [];
 
   for (const simple of parsed.commands) {
     // A checksum bypass counts wherever it is set, even on a non-Go command:
     // `GOSUMDB=off make build` is still a bypass.
     operations.push(...analyzeAssignments(simple.assignments));
+    assignments.push(...simple.assignments);
 
     const head = simple.argv[0];
     if (head === undefined) continue;
@@ -542,9 +545,9 @@ export function analyzeCommand(command: string): GoAnalysis {
       classification: "UNKNOWN_RISK",
       operations,
       notes,
-      // An unreadable command is not a licence to rewrite manifests unnoticed.
       writesManifests: false,
       refreshesVendor: false,
+      assignments,
     };
   }
 
@@ -559,8 +562,9 @@ export function analyzeCommand(command: string): GoAnalysis {
           notes,
           writesManifests,
           refreshesVendor,
+          assignments,
         }
-      : { ...IRRELEVANT, notes, writesManifests, refreshesVendor };
+      : { ...IRRELEVANT, notes, writesManifests, refreshesVendor, assignments };
   }
 
   const mutation = operations.some((op) => op.classification === "THIRD_PARTY_MUTATION");
@@ -570,5 +574,6 @@ export function analyzeCommand(command: string): GoAnalysis {
     notes,
     writesManifests,
     refreshesVendor,
+    assignments,
   };
 }

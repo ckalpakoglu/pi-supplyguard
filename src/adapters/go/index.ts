@@ -308,6 +308,8 @@ export function createGoAdapter(
   osv: OsvOptions = { ...(proxy.env === undefined ? {} : { env: proxy.env }) },
 ): EcosystemAdapter {
   const env: Readonly<Record<string, string | undefined>> = { ...(proxy.env ?? {}) };
+  // M11 quarantine: vendored modules this process has content-scanned.
+  const scannedVendorModules = new Set<string>();
   const releaseDates = new Map<string, ReleaseLookup>();
   const vulnerabilities = new Map<string, VulnerabilityLookup>();
 
@@ -478,6 +480,42 @@ export function createGoAdapter(
         });
       }
 
+      if (enforced && project.hasVendorTree) {
+        // M11 QUARANTINE: in paranoid, code compiled from an enforced vendor
+        // tree is content-scanned before the first build-shaped command that
+        // would run it. The scan runs HERE, lazily, once per module per
+        // process -- this is where the source exists, which is exactly why
+        // the approval-time banner (1.15) cannot be the deny.
+        if (ctx.profile === "paranoid" && ctx.classification === "THIRD_PARTY_CAPABLE") {
+          let scannedNow = 0;
+          for (const module of project.vendoredModules) {
+            const key = `${module.path}@${module.version}`;
+            if (scannedVendorModules.has(key)) continue;
+            const located = await locateModuleSource(ctx.repoRoot, module.path, module.version, env);
+            if (located === undefined) continue; // a missing tree is drift's finding
+            const findings = await scanModuleSource(located.root);
+            scannedVendorModules.add(key);
+            scannedNow += 1;
+            for (const finding of findings) {
+              events.push({
+                eventClass: "ArtifactAnomaly",
+                ecosystem: GO_ECOSYSTEM,
+                classification: "THIRD_PARTY_MUTATION",
+                artifact: module.path,
+                version: module.version,
+                summary: `${module.path}@${module.version}: ${finding.message} (${finding.file}:${finding.line})`,
+                detail: { rule: finding.rule, file: finding.file, line: finding.line },
+              });
+            }
+          }
+          if (scannedNow > 0) {
+            notes.push(
+              `vendor quarantine: content-scanned ${scannedNow} vendored module(s) before this build`,
+            );
+          }
+        }
+      }
+
       if (project.hasGoMod && !project.hasVendorTree) {
         if (ctx.profile === "paranoid" && ctx.classification === "THIRD_PARTY_MUTATION") {
           // SPEC 9.3: paranoid denies a dependency-changing operation until
@@ -506,7 +544,7 @@ export function createGoAdapter(
       return notes.length === 0 ? { events } : { events, notes };
     },
 
-    inspectToolCall(call: NormalizedToolCall, _ctx: AdapterContext): AdapterToolCallResult {
+    async inspectToolCall(call: NormalizedToolCall, ctx: AdapterContext): Promise<AdapterToolCallResult> {
       const command = shellCommand(call);
       if (command === undefined) {
         return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
@@ -522,8 +560,40 @@ export function createGoAdapter(
       // classes such as SecurityBypass deny in every profile and would flatten
       // that gradation.
       //
+
+      // M11 hermetic gate: with a vendor tree present, `-mod=mod` on a
+      // build-shaped command tells Go to fetch from the network instead of
+      // compiling the reviewed tree -- it un-enforces the vendor model one
+      // flag early, so it is denied in every profile.
+      const buildShaped =
+        analysis.classification === "THIRD_PARTY_CAPABLE" && analysis.operations.length === 0;
+      if (buildShaped) {
+        const project = await detectGoProject(ctx.repoRoot);
+        if (project.hasVendorTree) {
+          const fetching =
+            analysis.assignments.some(
+              (a) => a.name === "GOFLAGS" && a.value.includes("-mod=mod"),
+            ) || command.includes("-mod=mod");
+          if (fetching) {
+            events.push({
+              eventClass: "SecurityGateChange",
+              ecosystem: GO_ECOSYSTEM,
+              classification: "THIRD_PARTY_MUTATION",
+              summary:
+                "-mod=mod on a build command with a vendor tree present fetches from the " +
+                "network instead of compiling the reviewed vendored code. Build from the " +
+                "tree (drop the flag), or refresh it deliberately with `go mod vendor`.",
+              minimumDecision: "deny",
+            });
+          }
+        }
+      }
+
       return {
-        classification: analysis.classification,
+        classification:
+          buildShaped && events.length > 0
+            ? "THIRD_PARTY_MUTATION"
+            : analysis.classification,
         events,
         expectsManifestChange: analysis.writesManifests,
         ...(analysis.notes.length === 0 ? {} : { notes: analysis.notes }),
