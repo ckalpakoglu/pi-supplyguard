@@ -22,6 +22,7 @@ export const SUPPLY_CHAIN_EVENT_CLASSES = [
   "ChecksumBypass",
   "RegistryAccess",
   "DependencyFetch",
+  "ArtifactAnomaly",
   "CIReferenceAdd",
   "CIReferenceChange",
   "NetworkRequirement",

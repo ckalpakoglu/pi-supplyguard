@@ -391,26 +391,34 @@ omp (oh-my-pi) exposes tools Pi does not. What each one gets:
 omp subagents run headless, so a dependency `ASK` in a subagent fails closed
 and the Chief-only dependency rule (§2.8) holds.
 
-### 1.15 Artifact source is never analyzed
+### 1.15 Artifact content: a local heuristic scan, and its limits
 
 A dependency heading for a human gate is checked for known vulnerabilities
-(OSV), known alert shapes (Socket) and identity confusion (§1.4) — but nothing
-reads the code itself. Novel malware in an otherwise plausible package, the
-one attack none of those can name, passes every check SupplyGuard has and
-reaches the approval prompt looking clean.
+(OSV), known alert shapes (Socket) and identity confusion (§1.4) — and, since
+M10, by a **local, deterministic, offline content scan** of the module's own
+source (`src/analyzers/content.ts`): import-time egress and execution,
+environment harvesting beside a network call, large encoded blobs, cgo
+`dlopen`, and `//go:generate` directives inside the dependency, each reported
+with file and line as an `ArtifactAnomaly` event the human reads as code.
+What the scan is honest about: it is a heuristic for lazy and templated
+malware, and a determined author defeats it. Vendor quarantine and the
+hermetic build gate (M11) are the depth behind it.
 
-Human decision, 2026-09-27 (amended the same day): the baseline fix is a
-**local, deterministic, offline content scanner** — node built-ins only, no
-provider, no key — reporting file/line findings on egress or process execution
-reachable from package-init paths, environment harvesting, large encoded
-blobs, dynamic loading, and `//go:generate` directives inside the dependency.
-It is a heuristic for lazy/templated malware and says so; every rule ships
-with a false-positive corpus. Findings surface as an `ArtifactAnomaly` event;
-the human sees code, not a score.
+Two boundaries of the evidence, deliberate:
 
-**Jev** (TypeSafe AI's System One typed-decision model) is an *optional*
-external analyzer behind the same interface — one seat among several, never a
-dependency:
+- **The scan needs local source.** `vendor/<module>` or the module cache. At
+  approval time the fetch usually has not happened yet, so the common case is
+  an explicit "content not inspected yet" banner at the ask — in every
+  profile, because denying there would block every legitimate `go get`. The
+  paranoid denial for uninspected content lands at the M11 build gate, where
+  the source exists and the scan can actually run.
+- **`go.sum` moves are semantic now**: which module moved, from and to which
+  version, in the event summary and as scan targets.
+
+Human decision, 2026-09-27 (amended the same day): the baseline fix is the
+**local scanner** above — no provider, no key. **Jev** (TypeSafe AI's System
+One typed-decision model) is an *optional* external analyzer behind the same
+interface — one seat among several, never a dependency:
 
 - `src/providers/jev/` is a peer of the Socket provider, feeding the same
   `withExternalEvidence` channel — additive only, never a fifth decision;
@@ -434,9 +442,9 @@ milestone suite once with `src/providers/jev/` excluded to prove it.
 Implementation is planned on `feature/zero-day-hardening`
 (`docs/PLAN-ZERO-DAY.md`).
 
-Deferred until the P0 hardening batch (vendored-source writes, §1.9, §1.10's
-audit trail) landed; those are done, so nothing blocks the scanner but the
-decision to schedule M10.
+The M10 scanner and the optional Jev analyzer shipped on
+`feature/zero-day-hardening` (`docs/PLAN-ZERO-DAY.md`); what remains open is
+the M11 depth behind them.
 
 ---
 

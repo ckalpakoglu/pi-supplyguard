@@ -547,8 +547,75 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   errors.push(...projectState.errors);
   notes.push(...projectState.notes);
 
-  const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events];
+  // Zero-day classes are answered by no database; the only honest local
+  // answer is "what does this code actually do", read from the artifact's own
+  // source. Findings become ArtifactAnomaly events so the human is shown code;
+  // a source that cannot be located locally becomes a banner (ask) or, in
+  // paranoid, a denial: uninspected third-party content must not execute.
+  const contentEvents: SupplyChainEvent[] = [];
+  const uninspected: LocalFinding[] = [];
+  const scanned = new Set<string>();
+  const trustTargets = new Map<string, { readonly artifact: string; readonly version: string }>();
+  for (const event of [...callEvents, ...projectState.events]) {
+    if (!needsJustification(event)) continue;
+    const artifact = event.artifact ?? "";
+    const version = event.version ?? "";
+    if (artifact === "" || version === "") continue;
+    trustTargets.set(`${artifact}@${version}`, { artifact, version });
+    // go.sum carries its moved modules as a detail string (M10 semantics).
+    const modules = event.detail?.["modules"];
+    if (event.eventClass === "LockfileMutation" && typeof modules === "string") {
+      for (const spec of modules.split(" ")) {
+        const at = spec.lastIndexOf("@");
+        if (at <= 0) continue;
+        trustTargets.set(spec, { artifact: spec.slice(0, at), version: spec.slice(at + 1) });
+      }
+    }
+  }
+  for (const { artifact, version } of trustTargets.values()) {
+    const key = `${artifact}@${version}`;
+    if (scanned.has(key)) continue;
+    scanned.add(key);
 
+    let scan;
+    try {
+      scan = await ctx.registry.resolveContentScan(artifact, version, adapterCtx);
+    } catch {
+      scan = { scanned: false as const, reason: "the content scanner failed" };
+    }
+    if (scan === undefined) continue; // no adapter has an opinion
+
+    if (!scan.scanned) {
+      uninspected.push(
+        localFinding(
+          "content",
+          "content-uninspected",
+          "ask",
+          `${artifact}@${version}: source not locally resolvable yet (${scan.reason}); the ` +
+            `dependency's CONTENT has not been inspected. It will be scanned from the ` +
+            `vendor tree or module cache after it is fetched; approving now means trusting ` +
+            `an unread module, and in paranoid the build stays gated until the scan runs.`,
+        ),
+      );
+      continue;
+    }
+
+    if (scan.findings.length > 0) {
+      notes.push(`content scan (${scan.source}) of ${key}: ${scan.findings.length} finding(s)`);
+    }
+    for (const finding of scan.findings) {
+      contentEvents.push({
+        eventClass: "ArtifactAnomaly",
+        ecosystem: "generic",
+        classification: "THIRD_PARTY_MUTATION",
+        artifact,
+        version,
+        summary: `${key}: ${finding.message} (${finding.file}:${finding.line})`,
+        detail: { rule: finding.rule, file: finding.file, line: finding.line },
+      });
+    }
+  }
+  const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events, ...contentEvents];
 
   const justified = collectJustifications(events, ctx.justifications);
 
@@ -626,6 +693,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   let evaluation = evaluateLocal([
     ...baselineFindings(classification, events, ctx.profile),
     ...justified.findings,
+    ...uninspected,
     ...cooldown,
     ...vulnerabilities,
     ...identityFindings(events, ctx.trust, ctx.profile),

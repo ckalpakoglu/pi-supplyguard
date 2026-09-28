@@ -187,11 +187,22 @@ export interface EcosystemAdapter {
    * the attacker's path is worth. The command shape is the gate.
    */
   writeGuardPrefixes?(): readonly string[];
+
+  /**
+   * What does this artifact's locally available source actually contain?
+   * (M10.) Local, deterministic, offline: no provider, no key. `undefined`
+   * when the adapter has no opinion for this artifact.
+   */
+  resolveContentScan?(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<ContentScan | undefined>;
 }
 
 /**
- *
- * Project-state inspection sees how the current call was classified.
+ * Context for project-state inspection: how the current call was classified.
+ * SPEC 9.3 gates on it: Paranoid denies a DEPENDENCY-CHANGING operation when
  * no vendor tree exists, rather than denying every command in the repository.
  */
 export interface ProjectStateContext extends ProjectDecisionContext {
@@ -228,6 +239,23 @@ export interface RegistryStateInspection {
   readonly notes: readonly string[];
 }
 
+/** One verdict from the local content scanner, with the code to read. */
+export interface ContentFindingLike {
+  readonly rule: string;
+  readonly file: string;
+  readonly line: number;
+  readonly message: string;
+}
+
+/** What an adapter could establish about an artifact's actual source. */
+export type ContentScan =
+  | {
+      readonly scanned: true;
+      readonly source: "vendor" | "module-cache";
+      readonly findings: readonly ContentFindingLike[];
+    }
+  | { readonly scanned: false; readonly reason: string };
+
 export interface AdapterRegistry {
   register(adapter: EcosystemAdapter): void;
   list(): readonly EcosystemAdapter[];
@@ -240,6 +268,16 @@ export interface AdapterRegistry {
   sensitivePaths(): readonly string[];
   /** Union of every adapter's write-guard directory prefixes, sorted. */
   writeGuardPrefixes(): readonly string[];
+  /**
+   * First adapter answer for "what does this artifact's source actually
+   * contain?". `undefined` when no adapter has an opinion; that is different
+   * from an adapter saying the source is not locally resolvable.
+   */
+  resolveContentScan(
+    artifact: string,
+    version: string,
+    ctx: AdapterContext,
+  ): Promise<ContentScan | undefined>;
   /** Classify observed file mutations through every adapter. */
   inspectFileMutations(
     mutations: readonly FileMutation[],
@@ -351,6 +389,15 @@ export function createAdapterRegistry(
         notes,
         expectsManifestChange,
       };
+    },
+
+    async resolveContentScan(artifact, version, ctx) {
+      for (const adapter of registered.values()) {
+        if (adapter.resolveContentScan === undefined) continue;
+        const scan = await adapter.resolveContentScan(artifact, version, ctx);
+        if (scan !== undefined) return scan;
+      }
+      return undefined;
     },
 
     sensitivePaths() {

@@ -124,6 +124,22 @@ test("editing go.sum is a lockfile mutation that reports what changed", () => {
   assert.deepEqual(classes(events), ["LockfileMutation"]);
   assert.equal(events[0]?.detail?.["added"], 1);
   assert.equal(events[0]?.detail?.["removed"], 1);
+  // M10: a hash-only change on the same version carries no module move.
+  assert.equal(events[0]?.detail?.["modules"], "github.com/foo/bar@v1.2.3");
+  assert.match(events[0]?.summary ?? "", /github\.com\/foo\/bar v1\.2\.3/);
+});
+
+test("a go.sum version move names the module and both versions", () => {
+  const events = inspect(
+    mutation(
+      "github.com/foo/bar v1.2.3 h1:abc=\ngithub.com/foo/bar v1.2.3/go.mod h1:def=\n",
+      "github.com/foo/bar v1.4.0 h1:xyz=\ngithub.com/foo/bar v1.4.0/go.mod h1:uvw=\n",
+      "go.sum",
+    ),
+  );
+  assert.deepEqual(classes(events), ["LockfileMutation"]);
+  assert.match(events[0]?.summary ?? "", /v1\.2\.3→v1\.4\.0/);
+  assert.equal(events[0]?.detail?.["modules"], "github.com/foo/bar@v1.4.0");
 });
 
 test("go.work and vendor/modules.txt edits are lockfile mutations", () => {

@@ -106,6 +106,8 @@ export interface SupplyGuardConfig {
   readonly releaseAgeMinimumDays: number;
   readonly auditEnabled: boolean;
   readonly socket: SocketMode;
+  /** M10: optional experimental analyzer; the local scanner needs nothing. */
+  readonly jevEnabled: boolean;
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -117,6 +119,7 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   // SPEC 4.4: Socket scans are optional and off by default in standard. `auto`
   // means "use it if it is there", which costs an absent operator nothing.
   socket: "auto",
+  jevEnabled: false,
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -125,6 +128,7 @@ export interface ConfigLayer {
   readonly releaseAgeMinimumDays?: number;
   readonly auditEnabled?: boolean;
   readonly socket?: SocketMode;
+  readonly jevEnabled?: boolean;
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -218,8 +222,19 @@ export function tightenConfig(
     }
   }
 
+  let jevEnabled = base.jevEnabled;
+  if (layer.jevEnabled !== undefined) {
+    jevEnabled = base.jevEnabled || layer.jevEnabled;
+    if (jevEnabled !== layer.jevEnabled) {
+      warnings.push(
+        `${layerName} requested jev.enabled=false, which is weaker than the established ` +
+          `baseline jev.enabled=true; ignored.`,
+      );
+    }
+  }
+
   return {
-    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled, socket },
+    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled, socket, jevEnabled },
     warnings,
   };
 }
@@ -251,6 +266,7 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     releaseAgeMinimumDays?: number;
     auditEnabled?: boolean;
     socket?: SocketMode;
+    jevEnabled?: boolean;
   } = {};
 
   if ("profile" in doc) {
@@ -296,7 +312,20 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     }
   }
 
-  const known = new Set(["version", "profile", "releaseAge", "audit", "socket"]);
+  const jev = doc["jev"];
+  if (jev !== undefined) {
+    const enabled =
+      typeof jev === "object" && jev !== null && !Array.isArray(jev)
+        ? readBoolean(jev, "enabled")
+        : undefined;
+    if (enabled === undefined) {
+      warnings.push(`invalid "jev.enabled" value; ignored.`);
+    } else {
+      layer.jevEnabled = enabled;
+    }
+  }
+
+  const known = new Set(["version", "profile", "releaseAge", "audit", "socket", "jev"]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
       warnings.push(`unsupported configuration key "${key}"; ignored in this version.`);

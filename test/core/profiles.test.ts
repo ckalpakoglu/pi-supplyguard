@@ -106,6 +106,7 @@ test("profile x event decision contract table", () => {
     ToolInstall: ["ask", "ask", "ask"],
     ToolUpgrade: ["ask", "ask", "ask"],
     ThirdPartyExecution: ["ask", "ask", "ask"],
+    ArtifactAnomaly: ["ask", "ask", "ask"],
     LockfileMutation: ["ask", "ask", "ask"],
     VendorDrift: ["warn", "deny", "deny"],
     ChecksumBypass: ["deny", "deny", "deny"],

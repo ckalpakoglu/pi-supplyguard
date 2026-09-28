@@ -49,11 +49,11 @@ import {
   VENDOR_MODULES,
   VENDOR_PREFIX,
 } from "./project.ts";
+import { locateModuleSource, scanModuleSource } from "../../analyzers/content.ts";
 import { lookupVulnerabilities, type OsvOptions } from "./osv.ts";
 import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
 import type { ReleaseLookup } from "../../core/release-age.ts";
 import type { VulnerabilityLookup } from "../../core/vulnerability.ts";
-
 /**
  * Pull the shell command out of a tool call.
  *
@@ -222,17 +222,44 @@ function goSumEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
   }
 
   const diff = diffGoSum(parseGoSum(mutation.before ?? ""), parseGoSum(mutation.after ?? ""));
-  if (diff.added.length === 0 && diff.removed.length === 0) return [];
+  const removedByPath = new Map(
+    diff.removed.filter((e) => !e.goModHash).map((e) => [e.path, e.version]),
+  );
+  const moves: string[] = [];
+  const scannable: { readonly artifact: string; readonly version: string }[] = [];
+  const seen = new Set<string>();
+  for (const entry of diff.added) {
+    if (entry.goModHash) continue;
+    const key = `${entry.path}@${entry.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const from = removedByPath.get(entry.path);
+    moves.push(
+      from === undefined
+        ? `${entry.path} ${entry.version}`
+        : `${entry.path} ${from}→${entry.version}`,
+    );
+    scannable.push({ artifact: entry.path, version: entry.version });
+  }
+  const shown = moves.length > 5 ? [...moves.slice(0, 5), `… +${moves.length - 5} more`] : moves;
   return [
     mutationEvent(
       "LockfileMutation",
       `go.sum changed outside the SupplyGuard gate ` +
-        `(${diff.added.length} line(s) added, ${diff.removed.length} removed)`,
-      { detail: { added: diff.added.length, removed: diff.removed.length } },
+        `(${diff.added.length} line(s) added, ${diff.removed.length} removed)` +
+        (shown.length === 0 ? "" : `: ${shown.join(", ")}`),
+      {
+        detail: {
+          added: diff.added.length,
+          removed: diff.removed.length,
+          ...(scannable.length === 0
+            ? {}
+            : { modules: scannable.map((m) => `${m.artifact}@${m.version}`).join(" ") }),
+        },
+      },
     ),
   ];
 }
-
 /**
  * Classify an observed change to a tracked Go file.
  *
@@ -280,6 +307,7 @@ export function createGoAdapter(
   proxy: ProxyOptions = {},
   osv: OsvOptions = { ...(proxy.env === undefined ? {} : { env: proxy.env }) },
 ): EcosystemAdapter {
+  const env: Readonly<Record<string, string | undefined>> = { ...(proxy.env ?? {}) };
   const releaseDates = new Map<string, ReleaseLookup>();
   const vulnerabilities = new Map<string, VulnerabilityLookup>();
 
@@ -335,6 +363,21 @@ export function createGoAdapter(
     writeGuardPrefixes: () => [VENDOR_PREFIX],
 
     inspectFileMutation: (mutation: FileMutation) => inspectGoFileMutation(mutation),
+
+    /**
+     * M10: local, offline content evidence. The vendor tree wins when present
+     * (it is what enforced builds compile from); otherwise the module cache.
+     * Private modules are scanned too -- reading locally sends nothing
+     * anywhere. When neither exists the scan says so, and the engine turns
+     * "uninspected" into a banner or a denial by profile.
+     */
+    resolveContentScan: async (artifact, version, ctx) => {
+      const located = await locateModuleSource(ctx.repoRoot, artifact, version, env);
+      if (located === undefined) {
+        return { scanned: false, reason: "no vendor tree and no module-cache copy" };
+      }
+      return { scanned: true, source: located.source, findings: await scanModuleSource(located.root) };
+    },
 
     /**
      * SPEC 9.2 -- ask ONCE whether to keep enforcing an existing vendor model.

@@ -79,10 +79,12 @@ be complete without it.** Consequences, binding on every milestone:
 - Evidence packs assemble from whatever exists: justification + OSV + Socket +
   similarity + release age + **local content findings** (always, offline) +
   external analyzer findings (when configured) + go.sum delta. A dependency
-  event with **no content evidence at all** (no source resolvable — private
-  module, no vendor tree, cache miss) is `ASK` with an explicit "uninspected
-  content" banner in hardened, `DENY` in paranoid — today paranoid can
-  approve uninspected code if Socket is healthy, which defeats class A.
+  event whose source is not locally resolvable — the common case at approval
+  time, because the fetch happens after — carries an explicit "content not
+  inspected yet" banner at the ask, in every profile: denying there would
+  block every legitimate `go get`. Paranoid's "uninspected never executes"
+  denial lives at the M11 build gate, where the source exists and the scan
+  can actually run.
 
 **`go.sum` semantic diff** (§1.8): which module moved, in which direction,
 surfaced in the approval object — the human approves *what actually changed*,

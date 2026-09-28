@@ -85,6 +85,8 @@ export const EVENT_BASELINE = {
   ToolUpgrade: { standard: "ask", hardened: "ask", paranoid: "ask" },
   // SPEC 13.7: download-and-execute is at least as strict as an addition.
   ThirdPartyExecution: { standard: "ask", hardened: "ask", paranoid: "ask" },
+  // Local content-scan findings (M10): the human is shown code, and decides.
+  ArtifactAnomaly: { standard: "ask", hardened: "ask", paranoid: "ask" },
   LockfileMutation: { standard: "ask", hardened: "ask", paranoid: "ask" },
   // Removal reduces third-party surface; it is recorded, not gated.
   DependencyRemove: { standard: "warn", hardened: "warn", paranoid: "warn" },

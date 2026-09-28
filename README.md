@@ -94,8 +94,19 @@ Enforced now:
   third-party execution in every profile.
 - **Exact versions:** a bare module path (`go get github.com/foo/bar`) and
   floating versions (`@latest`, `v1`, branch names) are denied; only an exact
-  semantic version or full commit hash proceeds to the trust pipeline (an
-  `ASK` requiring human approval).
+- **Local content scan (M10):** a dependency heading for a human gate has its
+  own source scanned — from `vendor/` or the module cache, offline, no
+  provider — for import-time network calls and process execution,
+  environment harvesting beside egress, encoded payload blobs, cgo `dlopen`
+  and `//go:generate` directives inside the dependency. Findings reach the
+  approval prompt as file:line the human can read. Honest limits: it is a
+  heuristic for lazy/templated malware; when the source is not locally
+  resolvable yet the prompt says so instead of looking clean. `go.sum` changes
+  name which module moved, from and to which version.
+- **Optional Jev analyzer:** an experimental second opinion over the same
+  source, `jev.enabled` in configuration, **default off**, never a
+  dependency — the local scan needs no key, and a high-confidence verdict
+  contributes at most an ask while experimental.
 - **Checksum integrity:** `GOSUMDB=off`, `GONOSUMDB`, `GOFLAGS=-insecure`,
   `GOINSECURE` and `GOPRIVATE=*` are denied in every profile. Checksum
   verification is never weakened to make a proxy or scanner work.
@@ -273,7 +284,8 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
 | `go generate` (runs `//go:generate` directives from any source file) | Ask | Ask | Ask |
-| Direct write into vendored source (`sed -i vendor/…`) | Ask | Deny | Deny |
+| Content-scan finding in dependency source (`ArtifactAnomaly`) | Ask | Ask | Ask |
+| Dependency whose source is not locally resolvable yet | Ask + banner | Ask + banner | Ask + banner (build gated until scanned, M11) |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
 | Tracked manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
 | Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |

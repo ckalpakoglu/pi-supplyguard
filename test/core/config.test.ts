@@ -185,10 +185,11 @@ test("tightenConfig is monotone for every field", () => {
     releaseAgeMinimumDays: 20,
     auditEnabled: true,
     socket: "required",
+    jevEnabled: false,
   };
   const weakened = tightenConfig(
     base,
-    { profile: "standard", releaseAgeMinimumDays: 0, auditEnabled: false, socket: "off" },
+    { profile: "standard", releaseAgeMinimumDays: 0, auditEnabled: false, socket: "off", jevEnabled: false },
     "layer",
   );
   assert.deepEqual(weakened.config, base);
@@ -228,4 +229,20 @@ test("a project may require Socket but may not switch it off", () => {
   const weaker = tightenConfig(base, { socket: "off" }, "project");
   assert.equal(weaker.config.socket, "auto");
   assert.match(weaker.warnings.join(" "), /weaker than the established baseline/);
+});
+
+// M10: the optional analyzer is OFF by default and may only be switched on.
+test("jev.enabled is off by default and only tightens", () => {
+  assert.equal(COMPILED_SAFE_MINIMUMS.jevEnabled, false);
+  assert.equal(parseConfigLayer({ jev: { enabled: true } }).layer.jevEnabled, true);
+  assert.equal(parseConfigLayer({ jev: { enabled: "yes" } }).layer.jevEnabled, undefined);
+  assert.match(
+    parseConfigLayer({ jev: { enabled: "yes" } }).warnings.join(" "),
+    /invalid "jev.enabled" value/,
+  );
+
+  const on = tightenConfig(COMPILED_SAFE_MINIMUMS, { jevEnabled: true }, "project");
+  assert.equal(on.config.jevEnabled, true);
+  const offAgain = tightenConfig(on.config, { jevEnabled: false }, "project");
+  assert.equal(offAgain.config.jevEnabled, true, "a layer cannot switch it back off");
 });

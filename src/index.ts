@@ -71,8 +71,10 @@ import {
   JUSTIFY_TOOL,
   JUSTIFY_TOOL_PARAMETERS,
   parseJustification,
+  needsJustification,
   type JustificationStore,
 } from "./core/justification.ts";
+import { isPrivateModule, locateModuleSource } from "./analyzers/content.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
@@ -122,6 +124,8 @@ export interface RuntimeOptions {
    * Tests MUST inject `run`: nothing in the suite starts a process.
    */
   readonly socket?: SocketProviderOptions;
+  /** Optional Jev analyzer overrides; the analyzer itself is default-off. */
+  readonly jev?: { readonly baseUrl?: string; readonly model?: string };
 }
 
 export interface SupplyGuardRuntime {
@@ -257,6 +261,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();
+  // Approval-fatigue metric (M10): prompts per session, surfaced in status.
+  // More prompts mean less looking; the number exists to be watched.
+  const asksBySession = new Map<string, number>();
   // One provider per runtime: health and per-artifact results are cached in it,
   // so a session asks the CLI about a given package once.
   const socketProvider = createSocketProvider(options.socket ?? {});
@@ -326,6 +333,53 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     return sessionFloor === undefined
       ? project.loaded.config.profile
       : maxProfile(project.loaded.config.profile, sessionFloor);
+  }
+
+  /**
+   * Compose the engine's single external-evidence slot: Socket, plus the
+   * optional Jev analyzer when `jev.enabled` is on AND an API key exists in
+   * the environment. Jev is loaded dynamically ON PURPOSE: deleting
+   * `src/providers/jev/` must leave a fully working product (KNOWN-GAPS
+   * §1.15), and a static import would defeat that.
+   */
+  function externalEvidenceFor(project: ProjectContext, env: Readonly<Record<string, string | undefined>>) {
+    const socket =
+      socketMode(project) === "off"
+        ? undefined
+        : createSocketEvidence(socketProvider, {
+            requiredFor: (candidate) => candidate === "paranoid" || socketMode(project) === "required",
+          });
+    const key = env.TYPESAFE_API_KEY;
+    const jevConfigured = project.loaded.config.jevEnabled;
+
+    return async (events: Parameters<NonNullable<EngineContext["externalEvidence"]>>[0], ctx: EngineContext) => {
+      const findings = [];
+      if (socket !== undefined) findings.push(...(await socket(events, ctx)));
+      if (!jevConfigured) return findings;
+      const apiKey = env.TYPESAFE_API_KEY;
+      if (apiKey === undefined || apiKey === "") return findings;
+
+      // Dynamic on purpose: deleting src/providers/jev/ must leave a working
+      // product (KNOWN-GAPS 1.15); a static import would defeat that.
+      const { createJevAnalyzer } = await import("./providers/jev/index.ts");
+      const analyzer = createJevAnalyzer({ enabled: true, apiKey, ...(options.jev ?? {}) });
+      const targets = new Map<string, { artifact: string; version: string }>();
+      for (const event of events) {
+        if (!needsJustification(event)) continue;
+        if (event.artifact === undefined || event.version === undefined) continue;
+        targets.set(`${event.artifact}@${event.version}`, {
+          artifact: event.artifact,
+          version: event.version,
+        });
+      }
+      for (const { artifact, version } of targets.values()) {
+        if (isPrivateModule(artifact, env)) continue; // goes nowhere, ever
+        const located = await locateModuleSource(project.repoRoot, artifact, version, env);
+        if (located === undefined) continue; // local scanner already said so
+        findings.push(...(await analyzer.evidenceFor({ artifact, version, source: located.root })));
+      }
+      return findings;
+    };
   }
 
   async function writeAudit(
@@ -500,15 +554,15 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       auditEnabled: project.loaded.config.auditEnabled,
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
-      ...(socketMode(project) === "off"
+      ...(socketMode(project) === "off" && !project.loaded.config.jevEnabled
         ? {}
         : {
-            externalEvidence: createSocketEvidence(socketProvider, {
-              // SPEC 13.4: paranoid requires an artifact evaluation for every
-              // new trust decision, whatever the configuration says.
-              requiredFor: (candidate) =>
-                candidate === "paranoid" || socketMode(project) === "required",
-            }),
+            // Socket plus, when `jev.enabled` is on and a key exists, the
+            // optional Jev analyzer. Both are additive-only.
+            externalEvidence: externalEvidenceFor(
+              project,
+              (options.env ?? process.env) as Readonly<Record<string, string | undefined>>,
+            ),
           }),
       justifications: session.justifications,
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
@@ -520,6 +574,11 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
 
     const call = normalizeToolCall(event);
     const outcome = await evaluateToolCall(call, engineCtx);
+
+    if (outcome.approval?.required === true) {
+      const sid = ctx.sessionManager.getSessionId();
+      asksBySession.set(sid, (asksBySession.get(sid) ?? 0) + 1);
+    }
 
     // SPEC 14.2: the baseline advances only when the observed state was
     // accepted. After a DENY it stays put, so the rejected mutation is
@@ -753,6 +812,12 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       const lines = [
         "SupplyGuard",
         `  Effective profile    ${profile}`,
+        `  Jev analyzer         ${
+          config.jevEnabled ? "enabled (experimental; ASK-capped)" : "off"
+        }`,
+        `  Approvals asked      ${
+          asksBySession.get(ctx.sessionManager.getSessionId()) ?? 0
+        } this session (fatigue metric)`,
         `  Configured profile   ${config.profile}`,
         `  Session tightening   ${sessionFloor ?? "none"}`,
         `  Repository           ${project.repoRoot}${
