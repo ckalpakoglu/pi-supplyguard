@@ -149,6 +149,8 @@ export const AUDIT_RECORD_KINDS = [
   // A tool ran with different input than SupplyGuard evaluated (KNOWN-GAPS
   // 1.10): a later handler revised it after the gate. Audited, not prevented.
   "input-revision",
+  // A tracked file changed while no tool call was executing (M12 watch).
+  "out-of-band-write",
 ] as const;
 
 export type AuditRecordKind = (typeof AUDIT_RECORD_KINDS)[number];

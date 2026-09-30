@@ -25,6 +25,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { watch } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -264,6 +265,35 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   // Approval-fatigue metric (M10): prompts per session, surfaced in status.
   // More prompts mean less looking; the number exists to be watched.
   const asksBySession = new Map<string, number>();
+  // M12: tracked files that changed while no tool call was executing. Best
+  // effort and detection-only: reconciliation on the next call remains the
+  // gate; this makes the WRITE itself visible, with its timing.
+  const outOfBandWrites = new Set<string>();
+  const repoWatchers = new Map<string, { close(): void }>();
+  const executionsInFlight = new Set<string>();
+
+  function globMatch(pattern: string, value: string): boolean {
+    const glob = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+    return new RegExp(`^${glob}$`).test(value);
+  }
+
+  function startWatcher(repoRoot: string): void {
+    if (repoWatchers.has(repoRoot)) return;
+    try {
+      const watcher = watch(repoRoot, { recursive: true }, (_kind, filename) => {
+        if (typeof filename !== "string") return;
+        if (executionsInFlight.size > 0) return; // attributable to a running call
+        const rel = filename.replace(/\\/g, "/");
+        const hit = registry.sensitivePaths().some(
+          (path) => rel === path || rel.endsWith(`/${path}`) || globMatch(path, rel),
+        );
+        if (hit) outOfBandWrites.add(rel);
+      });
+      repoWatchers.set(repoRoot, watcher);
+    } catch {
+      // No watcher, no attribution: reconciliation still catches the change.
+    }
+  }
   // One provider per runtime: health and per-artifact results are cached in it,
   // so a session asks the CLI about a given package once.
   const socketProvider = createSocketProvider(options.socket ?? {});
@@ -541,6 +571,30 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     const project = await projectContext(ctx.cwd);
     await announceConfigWarnings(project, ctx);
 
+    startWatcher(project.repoRoot);
+    // Report tracked writes that landed while nothing was executing, then
+    // let this call's reconciliation remain the actual gate.
+    if (outOfBandWrites.size > 0) {
+      const paths = [...outOfBandWrites].sort();
+      outOfBandWrites.clear();
+      notify(
+        ctx,
+        `SupplyGuard: tracked file(s) changed while no tool call was running: ` +
+          `${paths.join(", ")}. The next evaluation reconciles them.`,
+        "warning",
+      );
+      await writeAudit(project, {
+        timestamp: now().toISOString(),
+        kind: "out-of-band-write",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: !ctx.hasUI,
+        message: `tracked file(s) changed outside any tool call: ${paths.join(", ")}`,
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+    }
+
     const profile = effective(project);
     const session = repoSession(project.repoRoot);
     const engineCtx: EngineContext = {
@@ -578,6 +632,12 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     if (outcome.approval?.required === true) {
       const sid = ctx.sessionManager.getSessionId();
       asksBySession.set(sid, (asksBySession.get(sid) ?? 0) + 1);
+    }
+
+    // The call now executes: writes it makes are attributable to it and are
+    // reconciled on the next call. The window closes at its tool_result.
+    if (!outcome.blocked && typeof event.toolCallId === "string") {
+      executionsInFlight.add(event.toolCallId);
     }
 
     // SPEC 14.2: the baseline advances only when the observed state was
@@ -679,6 +739,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       try {
         const id: unknown = event?.toolCallId;
         if (typeof id !== "string") return;
+        executionsInFlight.delete(id);
         const session = pendingManifestWriters.get(id);
         if (session !== undefined) {
           pendingManifestWriters.delete(id);

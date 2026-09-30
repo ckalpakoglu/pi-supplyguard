@@ -100,16 +100,31 @@ the file back (or approve the change), not to keep retrying.
 
 ### 1.3 Generic policy coverage stops at the shapes SPEC 15 names
 
-Installer pipelines and GitHub Actions references are enforced. Three edges are
-not, and each is a deliberate line rather than an oversight:
+Installer pipelines and GitHub Actions references are enforced. Four edges
+that used to be listed here are closed (M12):
 
-- **A download and its execution in two steps.** `curl -o i.sh …; sh i.sh` is a
-  `NetworkRequirement`, not a pipeline: the file is on disk to be read, which is
-  exactly the distinction SPEC §15.2 draws. Whether the agent then reads it is
-  not something SupplyGuard can see.
-- **Container image digests.** `uses: docker://alpine:3` is treated as
-  out-of-scope rather than as a mutable reference. Pinning image digests is the
-  same idea applied to a different registry, and it belongs with M9.
+- **A download and its execution in two steps.** `curl -o i.sh …; sh i.sh` is
+  still two events, but the second one no longer looks fresh: the generic
+  adapter remembers every download target for the session, and executing a
+  remembered file — in the same command or in a later call — is a
+  `SecurityBypass` denied in every profile. The file remains on disk to be
+  READ before it is run, which is the honest escape: review it, then run it
+  from a command that says so.
+- **Container image digests.** `docker://alpine:3` is a mutable reference
+  exactly like `actions/checkout@v4`; only `docker://image@sha256:<64 hex>`
+  counts as pinned. Same gate, same profiles.
+- **Scoped-checksum self-exemption.** `GOPRIVATE=github.com/foo/* go get
+  github.com/foo/bar@v1.2.3` — a scope that happens to cover the module being
+  added — is a `ChecksumBypass` for that add, denied in every profile. The
+  scoped pattern itself stays legal (§2.1); exempting the dependency you are
+  taking on, in the same breath, is not.
+- **Out-of-band writes are attributed.** A tracked file changed while no tool
+  call was executing (a background process, a `python3 rewrite.py` that
+  outlived its call) is reported with its timing — an `out-of-band-write`
+  audit record and a warning — on top of the next call's reconciliation,
+  which remains the gate. Best effort: `fs.watch`, no new dependency.
+
+Still a deliberate line, not an oversight:
 - **Mutable references already committed** are reported as audit notes on gated
   operations, not as a gate. Denying every command in a repository whose
   workflows predate SupplyGuard would make the profile unusable on arrival;

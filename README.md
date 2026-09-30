@@ -289,7 +289,10 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | `-mod=mod` build with a vendor tree present | Deny | Deny | Deny |
 | Paranoid build before vendored code is content-scanned | — | — | Scanned first; findings ask |
 | Unreadable / unrecognized risky command (`UNKNOWN_RISK`) | Ask | Ask | Deny |
-| Tracked manifest change nobody approved (`sed`, script, editor) | Ask | Ask | Ask |
+| `-mod=mod` build with a vendor tree present | Deny | Deny | Deny |
+| Download executed one step later (`curl -o x.sh …; sh x.sh`) | Deny | Deny | Deny |
+| Unpinned `docker://` image tag in a workflow change | Ask | Deny | Deny |
+| `GOPRIVATE` scope covering the module being added | Deny | Deny | Deny |
 | Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |
 | Vendor tree that no longer matches `go.mod` | Warn | Deny | Deny |
 | Dependency mutation with no vendor tree | Allow | Allow | Deny |

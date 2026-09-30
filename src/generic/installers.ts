@@ -43,6 +43,75 @@ function isDownloader(command: SimpleCommand): boolean {
   return head !== undefined && DOWNLOADERS.has(commandName(head.text));
 }
 
+/** The `-o`/`-O`/`--output` operand of a downloader: where the bytes land. */
+function downloadTarget(command: SimpleCommand): string | undefined {
+  const words = command.argv.slice(1);
+  for (let i = 0; i < words.length; i += 1) {
+    const word = words[i];
+    if (word === undefined) continue;
+    if (word.text === "-o" || word.text === "--output") {
+      return words[i + 1]?.text;
+    }
+    if (word.text.startsWith("-o") && word.text.length > 2) return word.text.slice(2);
+    if (word.text === "-O" || word.text === "--output-document") return words[i + 1]?.text;
+  }
+  return undefined;
+}
+
+/**
+ * M12 fetch->execute correlation: `curl -o x.sh URL` is a plain fetch
+ * (reviewable on disk, SPEC 15.2's deliberate edge). Executing the very file
+ * that was downloaded -- `sh x.sh` -- completes the pipeline one step later,
+ * with the same property: nothing was pinned, reviewed or verified. The
+ * remembered targets live in the caller (session scope); matching is by path
+ * tail, like the manifest write detector.
+ */
+export function executeOfDownloadedFile(
+  commands: readonly SimpleCommand[],
+  remembered: ReadonlySet<string>,
+): readonly SupplyChainEvent[] {
+  if (remembered.size === 0) return [];
+
+  const events: SupplyChainEvent[] = [];
+  for (const command of commands) {
+    const head = command.argv[0];
+    if (head === undefined) continue;
+    const tool = commandName(head.text);
+    if (!INTERPRETERS.has(tool) && tool !== "." && tool !== "source") continue;
+
+    const operands = command.argv.slice(1).filter((w) => !w.text.startsWith("-"));
+    for (const operand of operands) {
+      const normalized = operand.text.replace(/^\.\//, "");
+      const hit = [...remembered].find(
+        (path) =>
+          path === normalized || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`),
+      );
+      if (hit === undefined) continue;
+      events.push({
+        eventClass: "SecurityBypass",
+        ecosystem: GENERIC_ECOSYSTEM,
+        classification: "THIRD_PARTY_MUTATION",
+        artifact: hit,
+        summary:
+          `executes \`${hit}\`, which this session downloaded from the network. Read it ` +
+          `first: a download-then-execute split is the pipeline SPEC 15.2 denies, ` +
+          `one step apart`,
+        minimumDecision: "deny",
+      });
+      break;
+    }
+  }
+  return events;
+}
+
+/** Every download target named in this command string. */
+export function downloadTargets(commands: readonly SimpleCommand[]): readonly string[] {
+  return commands
+    .filter(isDownloader)
+    .map(downloadTarget)
+    .filter((p): p is string => p !== undefined);
+}
+
 /**
  * Is this interpreter about to run whatever arrives on stdin?
  *

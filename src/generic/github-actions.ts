@@ -75,10 +75,24 @@ function walk(node: unknown, out: ActionReference[], depth: number): void {
 export function classifyReference(uses: string): ActionReference {
   const value = uses.trim();
 
-  // A local action or a container image is not a moving tag on someone else's
-  // repository; digest policy for images is a separate question (M9).
-  if (value.startsWith("./") || value.startsWith("../") || value.startsWith("docker://")) {
+  // A local action is not a moving tag on someone else's repository.
+  if (value.startsWith("./") || value.startsWith("../")) {
     return { uses: value, action: value, immutable: true, local: true };
+  }
+
+  // A container image is a registry tag unless it is digest-pinned: the same
+  // mutability as an action tag, applied to a different registry (M12).
+  if (value.startsWith("docker://")) {
+    const image = value.slice("docker://".length);
+    const at = image.lastIndexOf("@");
+    const digest = at === -1 ? undefined : image.slice(at + 1);
+    return {
+      uses: value,
+      action: image,
+      ...(at === -1 ? {} : { ref: image.slice(at + 1) }),
+      immutable: at !== -1 && /^sha256:[0-9a-f]{64}$/.test(digest ?? ""),
+      local: false,
+    };
   }
 
   const at = value.lastIndexOf("@");

@@ -49,14 +49,14 @@ import {
   VENDOR_MODULES,
   VENDOR_PREFIX,
 } from "./project.ts";
-import { locateModuleSource, scanModuleSource } from "../../analyzers/content.ts";
+import { isPrivateModule, locateModuleSource, scanModuleSource } from "../../analyzers/content.ts";
 import { lookupVulnerabilities, type OsvOptions } from "./osv.ts";
 import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
 import type { ReleaseLookup } from "../../core/release-age.ts";
 import type { VulnerabilityLookup } from "../../core/vulnerability.ts";
+
 /**
  * Pull the shell command out of a tool call.
- *
  * Keyed on the shape of the input rather than on a hard-coded tool name: Pi's
  * bash tool passes `command`, and keying on the field means a renamed or
  * additional command-shaped tool is still inspected. A tool call without one
@@ -310,6 +310,13 @@ export function createGoAdapter(
   const env: Readonly<Record<string, string | undefined>> = { ...(proxy.env ?? {}) };
   // M11 quarantine: vendored modules this process has content-scanned.
   const scannedVendorModules = new Set<string>();
+  // Event classes whose artifact is a module being taken on trust.
+  const DEPENDENCY_EVENT_CLASSES_FOR_SCOPE = new Set([
+    "DependencyAdd",
+    "DependencyUpgrade",
+    "DependencyReplace",
+    "ThirdPartyExecution",
+  ]);
   const releaseDates = new Map<string, ReleaseLookup>();
   const vulnerabilities = new Map<string, VulnerabilityLookup>();
 
@@ -586,6 +593,34 @@ export function createGoAdapter(
               minimumDecision: "deny",
             });
           }
+        }
+      }
+
+      // M12: a scoped GOPRIVATE/GONOSUMDB that happens to cover the module
+      // being added is a checksum bypass for THAT module -- SPEC 2.1 keeps
+      // scoped patterns legal, and this rule is what keeps them honest.
+      for (const event of [...events]) {
+        const artifact = event.artifact;
+        if (artifact === undefined) continue;
+        if (!DEPENDENCY_EVENT_CLASSES_FOR_SCOPE.has(event.eventClass)) continue;
+        const exempted = analysis.assignments.find(
+          (a) =>
+            (a.name === "GOPRIVATE" || a.name === "GONOSUMDB") &&
+            isPrivateModule(artifact, { [a.name]: a.value }),
+        );
+        if (exempted !== undefined) {
+          events.push({
+            eventClass: "ChecksumBypass",
+            ecosystem: GO_ECOSYSTEM,
+            classification: "THIRD_PARTY_MUTATION",
+            artifact,
+            summary:
+              `${exempted.name}=${exempted.value} on this command exempts ${event.artifact} ` +
+              `from checksum verification: the add escapes the checksum database ` +
+              `through the environment the command sets for itself`,
+            minimumDecision: "deny",
+          });
+          break;
         }
       }
 
