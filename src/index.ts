@@ -76,6 +76,7 @@ import {
   type JustificationStore,
 } from "./core/justification.ts";
 import { isPrivateModule, locateModuleSource } from "./analyzers/content.ts";
+import { createNpmAdapter } from "./adapters/npm/index.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
@@ -258,6 +259,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         options.proxy ?? {},
         options.osv ?? { ...(options.proxy?.env === undefined ? {} : { env: options.proxy.env }) },
       ),
+      createNpmAdapter(),
     ]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();

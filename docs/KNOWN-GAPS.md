@@ -473,6 +473,31 @@ behind them:
   scanned once and stops costing anything. Session-scoped by design, like the
   manifest baseline: a restart re-scans on the next build.
 
+
+### 1.16 npm: enforced where the incidents are, honest about the rest
+
+The npm adapter (M13) covers the vector the incident record names: **lifecycle
+scripts in dependencies**. Every dependency the lockfile marks
+`hasInstallScript` is reported on gated operations, with the script body read
+from `node_modules` and shown in the approval prompt; an unpopulated tree
+reports the flag alone. `npm|pnpm|yarn|bun` installs, adds, removals, global
+installs and `npx`/`dlx` fetch-and-run are gated through the same
+shell-aware parser as Go, `package.json` and `package-lock.json` changes are
+semantic (which package moved, which direction), and `node_modules/` is a
+write-guard prefix like `vendor/`.
+
+What it deliberately does NOT do yet, each with a reason:
+
+- **No exact-version floor for ranges.** `^1.2.3` is npm's default; denying it
+  would make the adapter unusable on arrival. Bare names, `*` and dist-tags
+  (`latest`, `next`) carry the same deny floor as Go's floating versions —
+  they mean the same thing: the registry decides what runs. Exact pins and
+  ranges both proceed to the trust pipeline, ranges labeled as ranges.
+- **No release-age, OSV or content scan for npm artifacts** (the Go-shaped
+  scanner reads `.go` files). The evidence for an npm dependency today is its
+  declared scripts, its lockfile metadata, and the justification.
+- **pnpm/yarn lockfiles are gated coarsely** (one `LockfileMutation`), not
+  semantically.
 ---
 
 ## 2. Deliberate behaviors that can look like gaps

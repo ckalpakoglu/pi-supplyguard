@@ -362,11 +362,26 @@ function collectJustifications(
   const used = new Map<string, Justification>();
   if (store === undefined) return { findings, used };
 
+  // One justification per artifact@version, consumed once, covering every
+  // event for that pair: `npm install evil` is one decision that surfaces as
+  // a DependencyAdd AND a lifecycle-script ThirdPartyExecution, and a go.sum
+  // move can echo a module the command gate already named. Double-consuming
+  // would turn the second event into an unjustified denial.
+  const byKey = new Map<string, { readonly artifact: string; readonly version: string; readonly events: SupplyChainEvent[] }>();
   for (const event of events) {
     if (!needsJustification(event)) continue;
     const artifact = event.artifact ?? "";
     const version = event.version ?? "";
+    const key = `${artifact}@${version}`;
+    const entry = byKey.get(key);
+    if (entry === undefined) {
+      byKey.set(key, { artifact, version, events: [event] });
+    } else {
+      entry.events.push(event);
+    }
+  }
 
+  for (const { artifact, version, events: keyEvents } of byKey.values()) {
     const justification = store.take(artifact, version);
     if (justification === undefined) {
       findings.push(
@@ -383,7 +398,7 @@ function collectJustifications(
       continue;
     }
 
-    used.set(describeEvent(event), justification);
+    for (const event of keyEvents) used.set(describeEvent(event), justification);
     findings.push(
       localFinding(
         "justification",

@@ -109,7 +109,16 @@ Enforced now:
   contributes at most an ask while experimental.
 - **Checksum integrity:** `GOSUMDB=off`, `GONOSUMDB`, `GOFLAGS=-insecure`,
   `GOINSECURE` and `GOPRIVATE=*` are denied in every profile. Checksum
-  verification is never weakened to make a proxy or scanner work.
+  verification is never weakened to make a proxy or scanner work. `go.sum`
+  changes name which module moved, from and to which version.
+- **npm (M13):** `npm|pnpm|yarn|bun` installs, adds, removals, global
+  installs and `npx` fetch-and-run are gated through the same shell-aware
+  parser. The threat model is the lifecycle script: a dependency the lockfile
+  marks `hasInstallScript` is reported with its script body read from
+  `node_modules` and shown in the approval prompt. `package.json` and
+  `package-lock.json` changes are semantic; `node_modules/` is write-guarded
+  like `vendor/`. Ranges (`^1.2.3`) stay usable — bare names and dist-tags
+  (`latest`, `next`) carry the floating-version deny floor.
 - Unreadable or unrecognized package/network-capable commands are treated as
   `UNKNOWN_RISK` and fail conservative (ask / ask / deny by profile), and the
   audit record says which trigger made them unreadable.
@@ -293,7 +302,10 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | Download executed one step later (`curl -o x.sh …; sh x.sh`) | Deny | Deny | Deny |
 | Unpinned `docker://` image tag in a workflow change | Ask | Deny | Deny |
 | `GOPRIVATE` scope covering the module being added | Deny | Deny | Deny |
-| Existing Go vendor tree | Ask → enforce | Ask → enforce | Enforce |
+| npm dependency add, exact or range spec | Ask | Ask | Ask |
+| npm add with bare name / `*` / `latest` / `next` | Deny | Deny | Deny |
+| npm dependency running an install script (`postinstall`, …) | Ask, script body shown | Ask, script body shown | Ask, script body shown |
+| `npx pkg@ver` fetch-and-run | Ask | Ask | Ask |
 | Vendor tree that no longer matches `go.mod` | Warn | Deny | Deny |
 | Dependency mutation with no vendor tree | Allow | Allow | Deny |
 | Harmless operations (`ls`, `git status`, `gofmt`, reading files) | Allow | Allow | Allow |
