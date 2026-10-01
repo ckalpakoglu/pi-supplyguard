@@ -1,0 +1,24 @@
+name: live-provider-contracts
+
+# D18's lesson, made structural: the weekly job runs the only tests allowed
+# to touch the network, against the real Go proxy, the real OSV and the real
+# Socket CLI when it is installed. A provider change that only shows up live
+# fails here instead of in a user's approval prompt.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: node --test test/live/live.test.ts
+        env:
+          LIVE: "1"

@@ -9,6 +9,7 @@
  *   with its timing, on top of the next call's reconciliation.
  */
 import assert from "node:assert/strict";
+import { watch } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,12 +118,26 @@ async function outOfBandHarness(): Promise<{
   };
 }
 
-// fs.watch delivery is real inotify latency: no deterministic clock control
-// exists for the platform, so this is the rule's integration exception.
-const settle = (): Promise<void> =>
-  // Executor form: the repo's TS lib predates Promise.withResolvers.
-  new Promise((resolve) => {
-    setTimeout(resolve, 250);
+// An event-driven wait for OUR OWN watcher to see the change: no guessed
+// duration. Start it BEFORE writing, then await. One extra tick after the
+// event lets SupplyGuard's watcher (started earlier) observe it too.
+// Executor form: the repo's TS lib predates Promise.withResolvers.
+const changeSeen = (dir: string, file: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    try {
+      const w = watch(dir, { recursive: true }, (_kind, filename) => {
+        if (typeof filename === "string" && filename.endsWith(file)) {
+          w.close();
+          setTimeout(resolve, 50);
+        }
+      });
+      setTimeout(() => {
+        w.close();
+        reject(new Error("watcher never delivered the change"));
+      }, 5000);
+    } catch (error) {
+      reject(error);
+    }
   });
 
 
@@ -131,8 +146,9 @@ test("a tracked file changed between tool calls is attributed with its timing", 
   await h.call("1", "ls");
   h.result("1");
 
+  const changed = changeSeen(h.repo, "go.mod");
   await writeFile(join(h.repo, "go.mod"), "module example.com/app\n\ngo 1.22\n\nrequire github.com/x/y v1.0.0\n");
-  await settle();
+  await changed;
   h.notices.length = 0;
 
   await h.call("2", "ls");
@@ -148,8 +164,9 @@ test("a write made while a call executes is not out-of-band", async () => {
   h.result("1");
   await h.call("2", "ls"); // window opens; no result yet
 
+  const changed = changeSeen(h.repo, "go.mod");
   await writeFile(join(h.repo, "go.mod"), "module example.com/app\n\ngo 1.22\n\nrequire github.com/x/y v1.0.0\n");
-  await settle();
+  await changed;
   h.result("2");
   h.notices.length = 0;
 

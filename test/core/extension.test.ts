@@ -30,7 +30,7 @@ test("the default export registers the hooks, the commands and the tool", () => 
   } as never);
 
   assert.deepEqual(events, ["tool_call", "tool_result"], "the gate is the whole point");
-  assert.deepEqual(commands, ["supplyguard-status", "supplyguard-profile"]);
+  assert.deepEqual(commands, ["supplyguard-status", "supplyguard-profile", "supplyguard-trust"]);
   assert.deepEqual(
     tools.map((t) => t.name),
     ["supplyguard_justify_dependency"],

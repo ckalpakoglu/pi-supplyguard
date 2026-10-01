@@ -186,6 +186,7 @@ test("tightenConfig is monotone for every field", () => {
     auditEnabled: true,
     socket: "required",
     jevEnabled: false,
+    signalsEnabled: false,
   };
   const weakened = tightenConfig(
     base,

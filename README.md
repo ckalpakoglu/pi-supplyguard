@@ -353,8 +353,7 @@ The extension registers one LLM-callable tool:
   it is insufficient) before the operation that takes it on. Unjustified
   dependency operations are denied.
 
-and two commands:
-
+and three commands:
 - `/supplyguard-status` — show the effective profile, configuration sources
   and their statuses, registered ecosystem adapters, the cooldown setting, the
   watched manifest files and whether a baseline exists, per-ecosystem state
@@ -364,6 +363,9 @@ and two commands:
   current session only (`/supplyguard-profile paranoid`). It can never lower
   the effective profile and never writes configuration files; lowering the
   profile is a deliberate, reviewable configuration edit.
+- `/supplyguard-trust init` — seed `.supplyguard-trust.yaml` from the
+  repository's own `go.mod`, so typo- and repository-squatting analysis has a
+  corpus without hand-writing one. Never overwrites an existing corpus.
 
 ## How a tool call is evaluated
 
@@ -371,7 +373,7 @@ and two commands:
 Pi tool_call
 → snapshot the tracked manifests, and reconcile the previous call's changes
 → classification (every call)
-→ ecosystem adapter (Go today) → normalized supply-chain events, from the
+→ ecosystem adapter (Go, npm today) → normalized supply-chain events, from the
   command AND from any manifest change nobody approved
 → project state (vendor model), once its ask-once questions are answered
 → profile baseline + findings (most restrictive wins)

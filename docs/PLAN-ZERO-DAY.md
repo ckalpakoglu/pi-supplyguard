@@ -1,8 +1,15 @@
 # Zero-Day Hardening Plan — M10–M14
 
-Branch: `feature/zero-day-hardening`. Status: **plan, approved for design — not
-implemented.** This document extends `docs/SPEC.md`, it does not replace it;
-where the two disagree during implementation, stop and ask.
+Branch: `feature/zero-day-hardening`. Status: **M10–M14 implemented** — M10
+`ba47005` (local content scan, `ArtifactAnomaly`, optional Jev, go.sum
+semantics, fatigue metric), M11 `4261b61` (hermetic gate, vendor quarantine),
+M12 `a86e593` (fetch→execute correlation, docker digests, GOPRIVATE scoping,
+out-of-band watch), M13 `6854fa0` (npm adapter, lifecycle scripts), M14
+(homoglyphs, corpus tooling, incident replays, live contract tests + weekly
+CI, opt-in repository signals). This document extends `docs/SPEC.md`; where
+the two disagree, stop and ask. The falsifiers stand: the replays are green,
+paranoid scans vendored code before it executes, and the fatigue metric is in
+status.
 
 ## 0. What this plan claims, precisely
 

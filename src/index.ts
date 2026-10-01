@@ -53,6 +53,8 @@ import {
   type AuditRecord,
   type AuditSink,
 } from "./core/audit.ts";
+import { readFile, writeFile } from "node:fs/promises";
+import { parseGoMod } from "./adapters/go/modfile.ts";
 import {
   loadConfig,
   resolvePaths,
@@ -141,6 +143,8 @@ export interface SupplyGuardRuntime {
    */
   onToolResult(event: ToolResultEvent, ctx: ExtensionContext): Promise<void>;
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
+  /** `/supplyguard-trust init`: seed the corpus from go.mod (M14). */
+  trustCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
   justifyTool(params: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
@@ -409,6 +413,17 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         const located = await locateModuleSource(project.repoRoot, artifact, version, env);
         if (located === undefined) continue; // local scanner already said so
         findings.push(...(await analyzer.evidenceFor({ artifact, version, source: located.root })));
+      }
+
+      // M14 repository signals: opt-in, advisory, additive-only.
+      if (project.loaded.config.signalsEnabled) {
+        const { createRepoSignalsProvider } = await import("./providers/signals/index.ts");
+        const provider = createRepoSignalsProvider({
+          ...(typeof env.GITHUB_TOKEN === "string" ? { token: env.GITHUB_TOKEN } : {}),
+        });
+        for (const { artifact, version } of targets.values()) {
+          findings.push(...(await provider.evidenceFor(artifact, version)));
+        }
       }
       return findings;
     };
@@ -996,6 +1011,70 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         ...(project.branch === undefined ? {} : { branch: project.branch }),
       });
     },
+
+    async trustCommand(args, ctx) {
+      if (args.trim() !== "init") {
+        notify(
+          ctx,
+          "SupplyGuard: usage /supplyguard-trust init — generates .supplyguard-trust.yaml " +
+            "from the repository's go.mod",
+          "info",
+        );
+        return;
+      }
+
+      const project = await projectContext(ctx.cwd);
+      const target = join(project.repoRoot, ".supplyguard-trust.yaml");
+      try {
+        await access(target);
+        notify(
+          ctx,
+          "SupplyGuard: .supplyguard-trust.yaml already exists; not overwriting it.",
+          "warning",
+        );
+        return;
+      } catch {
+        // Absent: generate it.
+      }
+
+      let goMod: string | undefined;
+      try {
+        goMod = await readFile(join(project.repoRoot, "go.mod"), "utf8");
+      } catch {
+        goMod = undefined;
+      }
+      if (goMod === undefined) {
+        notify(ctx, "SupplyGuard: no go.mod found; nothing to seed a corpus from.", "warning");
+        return;
+      }
+
+      const modules = parseGoMod(goMod).requires.map((r) => r.path);
+      const body = [
+        "version: 1",
+        "protected:",
+        "  go:",
+        "    modules:",
+        ...modules.map((m) => `      - ${m}`),
+        "",
+      ].join("\n");
+      await writeFile(target, body, "utf8");
+      await writeAudit(project, {
+        timestamp: now().toISOString(),
+        kind: "command",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: !ctx.hasUI,
+        message: `seeded .supplyguard-trust.yaml from go.mod (${modules.length} modules)`,
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+      notify(
+        ctx,
+        `SupplyGuard: seeded .supplyguard-trust.yaml with ${modules.length} module(s) from ` +
+          `go.mod. Review it: the corpus is what typo and squatting analysis protects.`,
+        "info",
+      );
+    },
   };
 }
 
@@ -1016,9 +1095,14 @@ export default function supplyguard(pi: ExtensionAPI): void {
     description: "Show the effective profile, or tighten it for this session only",
     handler: (args, ctx) => runtime.profileCommand(args, ctx),
   };
+  const trust: CommandDefinition = {
+    description: "`init` seeds .supplyguard-trust.yaml from go.mod",
+    handler: (args, ctx) => runtime.trustCommand(args, ctx),
+  };
 
   pi.registerCommand(STATUS_COMMAND, status);
   pi.registerCommand(PROFILE_COMMAND, profile);
+  pi.registerCommand("supplyguard-trust", trust);
 
   const justify: ToolDefinition = {
     name: JUSTIFY_TOOL,

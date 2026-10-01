@@ -142,7 +142,10 @@ are structural rather than temporary:
 - **With no corpus it does nothing.** SPEC §12.6 requires exactly that: the tool
   has no way to know which `foo/bar` is the real one, and a version that guessed
   would produce confident nonsense about ownership. Paranoid says so in the
-  approval prompt; no profile denies for the absence alone.
+  approval prompt; no profile denies for the absence alone. Mitigated since M14:
+  `/supplyguard-trust init` seeds `.supplyguard-trust.yaml` from the
+  repository's own `go.mod` in one command, so the common case (protect what you
+  already use) costs nothing.
 - **The corpus is not an allow-list.** A module that is absent is not
   "untrusted"; it is simply not something a typo could be aimed at. An attacker
   registering a name that resembles nothing protected is invisible to this
@@ -155,8 +158,11 @@ are structural rather than temporary:
   adjacent transpositions cost one edit, a transposed pair edited again does
   not. That is the typo people actually make, and the unrestricted algorithm
   costs more for cases nobody types.
-- **No Unicode or homoglyph normalization.** SPEC §12.3 lists it as optional
-  future work, and a Cyrillic `о` in a module path would pass this check today.
+- **Homoglyph normalization is in (M14)**: a deliberately small, auditable
+  Latin-lookalike table (Cyrillic `о`/`р`/`ѕ`, Greek `ν`, …) folds onto ASCII
+  before any comparison, pinned by a Cyrillic-typosquat replay. What remains
+  out: full Unicode confusables (the Unicode `confusables.txt` set) and
+  mixed-script detection (an identifier mixing scripts is itself a signal).
 
 ### 1.5 Socket is the CLI only: no Firewall, and no manifest scan
 
@@ -186,12 +192,12 @@ or `socket login`, every artifact scan is therefore `unavailable` — which
 That is SPEC §13.4 working as designed, not a defect, but it is the kind of
 thing that gets a profile switched off if it arrives as a surprise.
 
-**Never exercised against the real CLI.** The command, the purl form and the
-`{ok, data:{self:{score,alerts}}}` document shape were read out of the published
-`socket@1.1.163` bundle, and every behaviour is tested against an injected
-runner — no test starts a process. A CLI change would surface as `unavailable`
-(the conservative direction) rather than as a wrong verdict, because an
-unrecognized document is never read as clean.
+**Live contract tests exist now (M14, D18's lesson).** The weekly CI job runs
+`test/live/live.test.ts` against the real proxy, the real OSV and the real
+Socket CLI (`LIVE=1` only; the normal suite stays hermetic). The purl form and
+document shape were originally read out of the published `socket@1.1.163`
+bundle; D18 then proved injected runners can hide live breakage, which is why
+the contract tests run against reality on a schedule.
 
 The approval object is still partial. SPEC §11.2 lists vulnerability findings,
 similarity findings and transitive impact alongside the purpose, stdlib and
@@ -498,6 +504,31 @@ What it deliberately does NOT do yet, each with a reason:
   declared scripts, its lockfile metadata, and the justification.
 - **pnpm/yarn lockfiles are gated coarsely** (one `LockfileMutation`), not
   semantically.
+
+### 1.17 Freshness: contract tests, replays, signals — each bounded
+
+M14 closes the "is it even live?" question three ways, and each way states its
+own limit:
+
+- **Incident replay corpus** (`test/core/replay.test.ts`): event-stream,
+  node-ipc, ua-parser-js, the `go generate` install shape and a Cyrillic
+  typosquat, replayed end-to-end against the real runtime. A replay passing
+  silently fails the build. Limit: these are FIVE incidents, shape-matched, not
+  a survey — xz-style build-system compromise (not agent-mediated) is not
+  represented because SupplyGuard does not sit in that path.
+- **Live contract tests** (`test/live/live.test.ts`, `LIVE=1`): real proxy,
+  real OSV, real Socket CLI, weekly in CI. Limit: they prove the plumbing
+  answers, not that verdicts are right.
+- **Repository signals** (`src/providers/signals/`, `signals.enabled`, default
+  off): transferred or archived repositories and first-mover repos (fresh
+  pushes, no history) add an ask to the artifacts they back. Advisory and
+  additive-only; an unreachable API withholds nothing. Limit: class C is the
+  weakest of the threat classes — a signal is a reason to look, not a verdict.
+
+CI (`.github/workflows/`) runs the hermetic suite on every push and the live
+contracts weekly; both pin their actions to full commit SHAs, which is what
+SupplyGuard itself demands of a workflow.
+
 ---
 
 ## 2. Deliberate behaviors that can look like gaps

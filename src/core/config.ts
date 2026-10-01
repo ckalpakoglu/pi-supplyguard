@@ -108,6 +108,8 @@ export interface SupplyGuardConfig {
   readonly socket: SocketMode;
   /** M10: optional experimental analyzer; the local scanner needs nothing. */
   readonly jevEnabled: boolean;
+  /** M14: optional repository-signal provider (class C). Default off. */
+  readonly signalsEnabled: boolean;
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -120,6 +122,7 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   // means "use it if it is there", which costs an absent operator nothing.
   socket: "auto",
   jevEnabled: false,
+  signalsEnabled: false,
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -129,6 +132,7 @@ export interface ConfigLayer {
   readonly auditEnabled?: boolean;
   readonly socket?: SocketMode;
   readonly jevEnabled?: boolean;
+  readonly signalsEnabled?: boolean;
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -222,6 +226,17 @@ export function tightenConfig(
     }
   }
 
+  let signalsEnabled = base.signalsEnabled;
+  if (layer.signalsEnabled !== undefined) {
+    signalsEnabled = base.signalsEnabled || layer.signalsEnabled;
+    if (signalsEnabled !== layer.signalsEnabled) {
+      warnings.push(
+        `${layerName} requested signals.enabled=false, which is weaker than the established ` +
+          `baseline signals.enabled=true; ignored.`,
+      );
+    }
+  }
+
   let jevEnabled = base.jevEnabled;
   if (layer.jevEnabled !== undefined) {
     jevEnabled = base.jevEnabled || layer.jevEnabled;
@@ -234,7 +249,15 @@ export function tightenConfig(
   }
 
   return {
-    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled, socket, jevEnabled },
+    config: {
+      version: 1,
+      profile,
+      releaseAgeMinimumDays,
+      auditEnabled,
+      socket,
+      jevEnabled,
+      signalsEnabled,
+    },
     warnings,
   };
 }
@@ -267,6 +290,7 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     auditEnabled?: boolean;
     socket?: SocketMode;
     jevEnabled?: boolean;
+    signalsEnabled?: boolean;
   } = {};
 
   if ("profile" in doc) {
@@ -325,7 +349,20 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     }
   }
 
-  const known = new Set(["version", "profile", "releaseAge", "audit", "socket", "jev"]);
+  const jevSignals = doc["signals"];
+  if (jevSignals !== undefined) {
+    const enabled =
+      typeof jevSignals === "object" && jevSignals !== null && !Array.isArray(jevSignals)
+        ? readBoolean(jevSignals, "enabled")
+        : undefined;
+    if (enabled === undefined) {
+      warnings.push(`invalid "signals.enabled" value; ignored.`);
+    } else {
+      layer.signalsEnabled = enabled;
+    }
+  }
+
+  const known = new Set(["version", "profile", "releaseAge", "audit", "socket", "jev", "signals"]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
       warnings.push(`unsupported configuration key "${key}"; ignored in this version.`);
