@@ -4,10 +4,9 @@ A policy enforcement layer for AI coding agents that makes dependency, tooling,
 build, and CI supply-chain trust decisions explicit, independently checked,
 reviewable, and enforceable before execution.
 
-> **Status: in development.** The Go pipeline is feature-complete and covered
-> by tests, but this is pre-release software: the versioned milestones are
-> done while npm/Python/Cargo adapters, Socket Firewall and publication are
-> not. Configuration and behavior may still change without notice, the
+> **Status: in development.** The Go and npm pipelines are feature-complete
+> and covered by tests, but this is pre-release software: Python/Cargo
+> adapters, Socket Firewall and publication are not done. Configuration and behavior may still change without notice, the
 > package is not on npm, and it has had one primary user and reviewer — treat
 > it as an experiment to evaluate, not a finished control. Read
 > [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) before relying on it, and pin a
@@ -25,8 +24,8 @@ ALLOW < WARN < ASK < DENY      (the most restrictive decision wins)
 `ASK` is a real human gate: the agent cannot approve its own trust decisions.
 In a headless session an `ASK` fails closed.
 
-- **Initial ecosystem:** Go / Go Modules (npm, Python and others are planned as
-  adapters, without redesigning the policy engine).
+- **Ecosystems today:** Go / Go Modules and npm (Python, Cargo and others are
+  planned as adapters, without redesigning the policy engine).
 - **Default profile:** `standard`.
 - **License:** Apache-2.0.
 
@@ -62,8 +61,8 @@ threats include:
   enforcement and, being headless, cannot pass a human gate).
 
 It is for anyone who runs an AI agent against a real codebase — particularly
-Go projects today — and wants supply-chain changes to be explicit and
-reviewable instead of silent.
+Go and JavaScript projects today — and wants supply-chain changes to be
+explicit and reviewable instead of silent.
 
 ## What is enforced today
 
@@ -74,7 +73,11 @@ config, profiles, decisions, audit), M2 (Go command gate) and M3 (manifest
 engine: snapshots, semantic `go.mod` state, vendor detection and drift) are
 complete, as are M4 (dependency justification, release cooldown, scoped
 one-shot overrides), M5 (identity protection), M6 (vulnerability metadata) and
-M7 (Socket CLI scans), M8 (generic policies) and M9 (adversarial hardening).
+M7 (Socket CLI scans), M8 (generic policies) and M9 (adversarial hardening) —
+plus the zero-day hardening line M10–M14 (local content evidence, hermetic
+builds and vendor quarantine, bypass closure, the npm adapter, and freshness:
+replay corpus, live contract tests, homoglyphs, corpus tooling, optional
+repository signals).
 Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**. [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
@@ -94,6 +97,8 @@ Enforced now:
   third-party execution in every profile.
 - **Exact versions:** a bare module path (`go get github.com/foo/bar`) and
   floating versions (`@latest`, `v1`, branch names) are denied; only an exact
+  semantic version or full commit hash proceeds to the trust pipeline (an
+  `ASK` requiring human approval).
 - **Local content scan (M10):** a dependency heading for a human gate has its
   own source scanned — from `vendor/` or the module cache, offline, no
   provider — for import-time network calls and process execution,
@@ -108,9 +113,11 @@ Enforced now:
   dependency — the local scan needs no key, and a high-confidence verdict
   contributes at most an ask while experimental.
 - **Checksum integrity:** `GOSUMDB=off`, `GONOSUMDB`, `GOFLAGS=-insecure`,
-  `GOINSECURE` and `GOPRIVATE=*` are denied in every profile. Checksum
-  verification is never weakened to make a proxy or scanner work. `go.sum`
-  changes name which module moved, from and to which version.
+  `GOINSECURE` and `GOPRIVATE=*` are denied in every profile, and so is a
+  scoped `GOPRIVATE`/`GONOSUMDB` that happens to cover the very module being
+  added — exempting the dependency you are taking on, in the same breath, is
+  not normal private-module usage. Checksum verification is never weakened to
+  make a proxy or scanner work.
 - **npm (M13):** `npm|pnpm|yarn|bun` installs, adds, removals, global
   installs and `npx` fetch-and-run are gated through the same shell-aware
   parser. The threat model is the lifecycle script: a dependency the lockfile
@@ -123,7 +130,9 @@ Enforced now:
   `UNKNOWN_RISK` and fail conservative (ask / ask / deny by profile), and the
   audit record says which trigger made them unreadable.
 - **Manifest reconciliation:** the tracked files (`go.mod`, `go.sum`,
-  `go.work`, `go.work.sum`, `vendor/modules.txt`) are snapshotted before every
+  `go.work`, `go.work.sum`, `vendor/modules.txt`, `package.json`,
+  `package-lock.json`, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock`)
+  are snapshotted before every
   tool call and compared on the next one, so a change made by `sed`, a Python
   script or generated code becomes the same normalized event a `go get` would
   have produced — add, upgrade, downgrade, remove, replace, exclude. Deleting
@@ -137,7 +146,10 @@ Enforced now:
   runs, which closes the substitute-build-revert sequence that leaves no trace
   for a snapshot to find. A write into **vendored source** — `sed -i vendor/…`,
   `cp … vendor/…`, a redirection — is vendor drift and is gated before it runs;
-  the tree enforced builds compile from is not something to hand-edit. And a
+  the tree enforced builds compile from is not something to hand-edit, and
+  `node_modules/` is guarded the same way. A tracked file that changes while
+  **no tool call is executing** (a background process, a script that outlived
+  its call) is reported with its timing on top of the reconciliation. And a
   tool call that runs with input differing from what SupplyGuard evaluated (a
   co-installed extension revising it after the gate) is warned about and
   audited.
@@ -170,24 +182,31 @@ Enforced now:
   justification is never offered an override.
 - **Installer pipelines:** `curl … | sh`, `wget … | bash` and the same shape
   piped into `python`, `node` or `perl` are denied in every profile — no
-  override lifts them (SPEC §15.2). Grouping (`| (sh)`) does not hide the pipe.
-  A download that is *not* executed is a different event, and piping fetched
-  data into a local script is ordinary work that stays free.
+  override lifts them (SPEC §15.2). Grouping (`| (sh)`) does not hide the pipe,
+  and neither does splitting it: executing a file this session downloaded —
+  `curl -o x.sh …; sh x.sh`, in one command or a later call — is the same
+  denial. A download that is only *read* stays free; that is the honest
+  escape.
 - **GitHub Actions pinning:** `uses: actions/checkout@v4` is a mutable
   reference — the tag can be repointed at any commit. Introducing one asks in
   `standard` and is denied in `hardened` and `paranoid`; only a full
-  40-character commit SHA counts as pinned. Workflow files are part of the
-  manifest snapshot set, so a workflow rewritten by a script is caught the same
-  way `go.mod` is.
+  40-character commit SHA counts as pinned — and `uses: docker://alpine:3`
+  is a mutable registry tag exactly like an action tag; only a
+  `docker://image@sha256:<64 hex>` digest counts. Workflow files are part of
+  the manifest snapshot set, so a workflow rewritten by a script is caught the
+  same way `go.mod` is.
 - **Typo- and repository-squatting:** module identities are compared against a
   user-controlled corpus of *protected identities* — component by component
   (host / owner / repository), with a Damerau-Levenshtein distance that counts
   an adjacent transposition as one edit. The protected repository name under a
   different owner (`random-owner/uuid` for `google/uuid`) is a signal of its
-  own, precisely because its edit distance is large. The profile widens the net
-  (0.08 / 0.15 / 0.25); a match asks in `standard` and is denied with an
-  override above it. **The corpus is not an allow-list**, and with no corpus the
-  analysis is disabled rather than guessed — `paranoid` says so in the prompt.
+  own, precisely because its edit distance is large. Confusable characters
+  (a Cyrillic `о`, a Greek `ν`) fold onto their Latin lookalikes before any
+  comparison. The profile widens the net (0.08 / 0.15 / 0.25); a match asks in
+  `standard` and is denied with an override above it. **The corpus is not an
+  allow-list** — `/supplyguard-trust init` seeds one from `go.mod` in a single
+  command — and with no corpus the analysis is disabled rather than guessed,
+  which `paranoid` says so in the prompt.
 - **Known vulnerabilities:** every artifact heading for a trust decision is
   checked against [OSV](https://osv.dev), which needs no account or token. A
   **critical** advisory is denied in every profile and cannot be overridden; a
@@ -212,10 +231,13 @@ Enforced now:
   with profile, session, repository, branch, event and decision. Secrets and
   raw environment dumps are never recorded.
 
-Not yet implemented: Socket Firewall and the Socket manifest scan, npm /
-Python / Cargo adapters, brokering a delegated worker's `ASK` up to the Chief
-UI, and defense against a hostile co-installed extension. Each is documented
-with its reason in [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md).
+Not yet implemented: Socket Firewall and the Socket manifest scan, Python /
+Cargo adapters, release-age/OSV/content evidence for npm artifacts (their
+evidence today is lifecycle scripts and lockfile metadata), brokering a
+delegated worker's `ASK` up to the Chief UI, and *preventing* a hostile
+co-installed extension from revising approved input (that is detected and
+audited, not prevented). Each is documented with its reason in
+[`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md).
 
 ## Installation
 
@@ -289,6 +311,8 @@ tables; the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | Advisory with no stated severity | Ask | Ask | Deny + override with a written reason |
 | Socket critical alert | Deny | Deny | Deny |
 | Socket unavailable / unauthenticated | Warn | Warn | Deny |
+| Jev verdict (optional, `jev.enabled`) | — / Ask | — / Ask | — / Ask |
+| Repository signal (optional, `signals.enabled`) | — / Ask | — / Ask | — / Ask |
 | Network fetch that is not executed | Allow | Ask | Deny |
 | Checksum-integrity bypass (`GOSUMDB=off`, …) | Deny | Deny | Deny |
 | Build/test-shaped Go commands (`go build`, `go test`, …) | Allow | Allow | Warn |
@@ -331,9 +355,15 @@ compiled safe minimums
 ```
 
 Each layer may only tighten the previous one. Configuration currently supports
-`profile`, `releaseAge.minimumDays`, `audit.enabled` and
-`socket.enabled` (`off` / `auto` / `required`); unknown keys are ignored with a warning rather than silently
+`profile`, `releaseAge.minimumDays`, `audit.enabled`, `socket.enabled`
+(`off` / `auto` / `required`), `jev.enabled` and `signals.enabled` (both
+default off); unknown keys are ignored with a warning rather than silently
 accepted. Project configuration is re-read within a few seconds of change.
+
+The optional analyzers read their credentials from the environment, never from
+configuration files: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) for Jev, and
+`GITHUB_TOKEN` for repository signals if you have one. Modules covered by
+`GOPRIVATE`/`GONOPROXY`/`GOPROXY=off` are never sent to any of them.
 
 Example:
 
@@ -376,7 +406,8 @@ Pi tool_call
 → ecosystem adapter (Go, npm today) → normalized supply-chain events, from the
   command AND from any manifest change nobody approved
 → project state (vendor model), once its ask-once questions are answered
-→ profile baseline + findings (most restrictive wins)
+→ local content scan of every artifact heading for a trust decision
+→ profile baseline + findings, local and external (most restrictive wins)
 → ASK prompts the human (headless: deny)
 → DENY blocks before execution
 → audit
@@ -389,11 +420,11 @@ src/index.ts        host wiring: hooks, approval UI, audit, commands, tool
 src/host/           host tool shapes normalized for the core (omp, Pi)
 src/core/           policy engine: events, decisions, profiles, manifest
                     snapshots, approval, justification, config, audit, state
-src/adapters/       ecosystem adapters (Go today) behind a registry
+src/adapters/       ecosystem adapters (Go, npm) behind a registry
 src/generic/        ecosystem-agnostic policy: shell parsing, installer
                     pipelines, sensitive writes, GitHub Actions references
-src/analyzers/      identity analysis (Damerau-Levenshtein, squatting)
-src/providers/      external providers (Socket CLI)
+src/analyzers/      identity analysis and the local content scanner
+src/providers/      external providers (Socket CLI, optional Jev and signals)
 types/              hand-written declarations for the host extension API
 test/               the suite every rule above is pinned by
 docs/               SPEC.md (canonical design), KNOWN-GAPS.md (honesty)
@@ -409,12 +440,20 @@ added as event producers/verifiers without redesigning it.
 npm run check     # typecheck (tsc --noEmit) + tests (node --test)
 ```
 
-The test suite uses Node's built-in test runner — no test framework
-dependency. Tests include Go command parsing, shell wrapper/bypass cases,
-semantic `go.mod`/`go.sum` diffing, manifest snapshots and end-to-end
-`sed`/script reconciliation through the real runtime, vendor drift, profile
-decision contract tables, configuration precedence, audit redaction and
-mutation checks on the wiring layer.
+The suite (~456 tests, Node's built-in runner, no test framework dependency)
+includes Go and npm command parsing, shell wrapper/bypass cases, semantic
+`go.mod`/`go.sum`/lockfile diffing, manifest snapshots and end-to-end
+`sed`/script reconciliation through the real runtime, vendor drift and
+quarantine, profile decision contract tables, configuration precedence, audit
+redaction, mutation checks on the wiring layer, and an **incident replay
+corpus** — event-stream, node-ipc, ua-parser-js, the `go generate` install
+shape and a Cyrillic typosquat replayed end-to-end; a replay passing silently
+fails the build.
+
+`test/live/live.test.ts` is the suite's only network-touching exception: real
+Go proxy, real OSV, real Socket CLI, run with `LIVE=1` by the weekly CI job
+(`.github/workflows/`) — the structural answer to a defect class where every
+other test injected its runner and the live path had silently broken.
 
 **Dependency policy:** the runtime has a single pinned dependency
 (`yaml@2.9.0`, zero transitive dependencies) plus Node built-ins; dev
