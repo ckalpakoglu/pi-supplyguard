@@ -453,7 +453,8 @@ interface — one seat among several, never a dependency:
 - **public modules only**: source is read from `vendor/` or the module cache
   and sent nowhere if `GOPRIVATE`/`GONOPROXY`/`GOPROXY=off` covers the module;
 - the model's explanation text is untrusted display data, never instructions;
-- `JEV_API_KEY` never enters audit, logs or prompts; caching is per
+- `TYPESAFE_API_KEY` (or `JEV_API_KEY` as a fallback spelling) never enters
+  audit, logs or prompts; caching is per
   module@version and content hash; tests use an injected `fetch`.
 
 No gate keys on Jev or on any remote analyzer: "content inspected" means the

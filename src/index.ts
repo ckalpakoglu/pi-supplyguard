@@ -129,7 +129,12 @@ export interface RuntimeOptions {
    */
   readonly socket?: SocketProviderOptions;
   /** Optional Jev analyzer overrides; the analyzer itself is default-off. */
-  readonly jev?: { readonly baseUrl?: string; readonly model?: string };
+  readonly jev?: {
+    readonly baseUrl?: string;
+    readonly model?: string;
+    /** Test seam: an injected transport. Nothing in the suite reaches the network. */
+    readonly post?: (url: string, body: unknown, apiKey: string) => Promise<unknown>;
+  };
 }
 
 export interface SupplyGuardRuntime {
@@ -385,14 +390,13 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         : createSocketEvidence(socketProvider, {
             requiredFor: (candidate) => candidate === "paranoid" || socketMode(project) === "required",
           });
-    const key = env.TYPESAFE_API_KEY;
     const jevConfigured = project.loaded.config.jevEnabled;
 
     return async (events: Parameters<NonNullable<EngineContext["externalEvidence"]>>[0], ctx: EngineContext) => {
       const findings = [];
       if (socket !== undefined) findings.push(...(await socket(events, ctx)));
       if (!jevConfigured) return findings;
-      const apiKey = env.TYPESAFE_API_KEY;
+      const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
       if (apiKey === undefined || apiKey === "") return findings;
 
       // Dynamic on purpose: deleting src/providers/jev/ must leave a working
@@ -625,11 +629,14 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       auditEnabled: project.loaded.config.auditEnabled,
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
-      ...(socketMode(project) === "off" && !project.loaded.config.jevEnabled
+      ...(socketMode(project) === "off" &&
+        !project.loaded.config.jevEnabled &&
+        !project.loaded.config.signalsEnabled
         ? {}
         : {
             // Socket plus, when `jev.enabled` is on and a key exists, the
-            // optional Jev analyzer. Both are additive-only.
+            // optional Jev analyzer; and `signals.enabled` for repository
+            // signals. All additive-only.
             externalEvidence: externalEvidenceFor(
               project,
               (options.env ?? process.env) as Readonly<Record<string, string | undefined>>,
