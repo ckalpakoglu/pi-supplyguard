@@ -150,6 +150,9 @@ export interface SupplyGuardRuntime {
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** `/supplyguard-trust init`: seed the corpus from go.mod (M14). */
   trustCommand(args: string, ctx: ExtensionContext): Promise<void>;
+
+  /** `/supplyguard-log [n]`: the last n audit records in a popup. */
+  logCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
   justifyTool(params: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
@@ -259,6 +262,29 @@ function notify(
   }
 }
 
+
+/** One compact, human-readable line per audit record, newest last. */
+function formatAuditLine(record: Record<string, unknown>): string {
+  const time = typeof record["timestamp"] === "string"
+    ? (record["timestamp"] as string).slice(11, 19)
+    : "??:??:??";
+  const kind = String(record["kind"] ?? "?");
+  const tool = typeof record["tool"] === "string" ? ` ${record["tool"]}` : "";
+  const decision = typeof record["decision"] === "string" ? ` → ${record["decision"]}` : "";
+
+  const findings = Array.isArray(record["findings"])
+    ? (record["findings"] as { decision?: string; message?: string; origin?: string }[])
+    : [];
+  const headline =
+    findings.find((f) => f.origin === "human")?.message ??
+    findings.find((f) => f.decision === record["decision"])?.message ??
+    findings[0]?.message ??
+    (typeof record["message"] === "string" ? record["message"] : "");
+  const clip = headline.length > 110 ? `${headline.slice(0, 107)}…` : headline;
+  const more = findings.length > 1 ? `  (+${findings.length - 1})` : "";
+
+  return `${time}  ${kind}${tool}${decision}  ${clip}${more}`;
+}
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
   const registry =
     options.registry ??
@@ -1082,6 +1108,45 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         "info",
       );
     },
+
+    /**
+     * `/supplyguard-log [n]` — the last n audit records, in a scrollable
+     * popup when the host has one (Pi's `ui.editor`), as a notification
+     * otherwise. Read-only: the viewer's editor semantics are ignored, the
+     * audit file is the record.
+     */
+    async logCommand(args, ctx) {
+      const requested = Number.parseInt(args.trim(), 10);
+      const count = Number.isNaN(requested) ? 20 : Math.min(Math.max(requested, 1), 100);
+
+      const project = await projectContext(ctx.cwd);
+      let lines: string[] = [];
+      try {
+        const raw = await readFile(project.paths.audit, "utf8");
+        const records = raw
+          .trim()
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        lines = records.slice(-count).map(formatAuditLine);
+      } catch {
+        lines = [];
+      }
+
+      if (lines.length === 0) {
+        notify(ctx, "SupplyGuard: no audit records yet for this repository.", "info");
+        return;
+      }
+
+      const title = `SupplyGuard audit — last ${lines.length} record(s)  [${project.repoRoot}]`;
+      const body = lines.join("\n");
+      const editor = (ctx.ui as { editor?: (t: string, p?: string) => Promise<string | undefined> }).editor;
+      if (typeof editor === "function") {
+        await editor.call(ctx.ui, title, body);
+        return;
+      }
+      notify(ctx, `${title}\n${body}`, "info");
+    },
   };
 }
 
@@ -1110,7 +1175,10 @@ export default function supplyguard(pi: ExtensionAPI): void {
   pi.registerCommand(STATUS_COMMAND, status);
   pi.registerCommand(PROFILE_COMMAND, profile);
   pi.registerCommand("supplyguard-trust", trust);
-
+  pi.registerCommand("supplyguard-log", {
+    description: "Show the last audit records in a popup (usage: /supplyguard-log 50)",
+    handler: (args, ctx) => runtime.logCommand(args, ctx),
+  });
   const justify: ToolDefinition = {
     name: JUSTIFY_TOOL,
     label: "SupplyGuard justify dependency",
