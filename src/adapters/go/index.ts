@@ -46,6 +46,8 @@ import {
   GO_MOD,
   GO_SENSITIVE_PATHS,
   GO_SUM,
+  GO_WORK,
+  GO_WORK_SUM,
   VENDOR_MODULES,
   VENDOR_PREFIX,
 } from "./project.ts";
@@ -268,7 +270,21 @@ function goSumEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
  * command gate produces -- which is the point: `sed -i go.mod` and
  * `go get` reach the same trust decision.
  */
+const GO_OWNED_PATHS: Record<string, true> = {
+  [GO_MOD]: true,
+  [GO_SUM]: true,
+  [VENDOR_MODULES]: true,
+  [GO_WORK]: true,
+  [GO_WORK_SUM]: true,
+};
+
 function inspectGoFileMutation(mutation: FileMutation): readonly SupplyChainEvent[] {
+  // npm's manifests reach every adapter through the registry fan-out. An
+  // npm file this adapter does not recognize is npm's to report: claiming it
+  // here produced "[go] package-lock.json changed" evidence -- gated, but
+  // mislabeled and nameless next to what the npm adapter can say.
+  if (GO_OWNED_PATHS[mutation.path] !== true) return [];
+
   if (!mutation.contentAvailable) {
     return [
       mutationEvent(

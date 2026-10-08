@@ -401,3 +401,49 @@ test("piping data into a script that processes it is not executing the download"
     );
   }
 });
+
+// ---------------------------------------------------------------------------
+// File-tool writes: the pre-execution guard must not depend on the write
+// arriving through a shell command. Guarded trees are not snapshotted, so the
+// tool input is the only place the write is ever visible.
+// ---------------------------------------------------------------------------
+
+function toolWrites(toolName: string, input: Record<string, unknown>): readonly SupplyChainEvent[] {
+  const result = adapter.inspectToolCall(
+    { toolName, input },
+    {
+      repoRoot: "/repo",
+      profile: "standard",
+      watchedPaths: WATCHED,
+      writeGuardPrefixes: ["vendor/", "node_modules/"],
+    },
+  );
+  return (result as { events: readonly SupplyChainEvent[] }).events;
+}
+
+test("an edit-tool write into a guarded tree is a VendorDrift before it lands", () => {
+  const events = toolWrites("edit", {
+    path: "node_modules/evil/index.js",
+    oldText: "a",
+    newText: "b",
+  });
+  assert.deepEqual(classes(events), ["VendorDrift"]);
+  assert.equal(events[0]?.artifact, "node_modules/");
+  assert.match(events[0]?.summary ?? "", /edit tool writes vendored source/);
+});
+
+test("an edit-tool write into a tracked manifest is gated before it lands", () => {
+  const events = toolWrites("edit", { path: "go.mod", oldText: "a", newText: "b" });
+  assert.deepEqual(classes(events), ["LockfileMutation"]);
+  assert.equal(events[0]?.artifact, "go.mod");
+});
+
+test("reads and prose are never taxed by the file-tool guard", () => {
+  assert.deepEqual(toolWrites("read", { path: "node_modules/evil/index.js" }), []);
+  assert.deepEqual(toolWrites("edit", { path: "src/app.ts", oldText: "a", newText: "b" }), []);
+  // Not a path: quoted, parenthesised code content that mentions the tree.
+  assert.deepEqual(
+    toolWrites("edit", { path: "src/app.ts", newText: "require('vendor/x')" }),
+    [],
+  );
+});

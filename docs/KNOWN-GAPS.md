@@ -880,6 +880,64 @@ alert, so the worst severity is never lost. Found while testing D18's fix
 against the installed CLI.
 Pinned by *"an alert repeated in the transitive section is reported once"*.
 
+### D20 — the npm lockfile parser read a layout npm stopped writing in 2020
+
+**Severity: high.** `parsePackageLock` read only the legacy flat `dependencies`
+map. npm 7 (lockfileVersion 2/3) moved everything to
+`packages["node_modules/<name>"]` and v3 drops the flat map entirely, so on
+every modern repository the parser saw an **empty dependency graph**:
+
+```text
+packages: { "node_modules/gotpkg": { version: "1.0.0", hasInstallScript: true } }
+                                   -> was: parsed as zero dependencies
+```
+
+Three consequences, all proven against the p4 lab scenario
+(`supplyguard-lab/p4-npm-lifecycle`, a real v3 lockfile): an indirect lockfile
+rewrite fell through to the Go adapter's catch-all and was gated only coarsely,
+mislabeled `[go]` and naming no package; the lifecycle-script scan
+(`inspectProjectState`) had nothing to report, so `npm ci` prompts carried no
+per-package evidence; and `diffLock` compared **by name only**, so
+`evil@1.0.0 → evil@9.9.9` inside the lockfile was invisible in both layouts.
+The existing lifecycle test encoded the wrong assumption — it wrote
+`lockfileVersion: 3` with a flat `dependencies` map, a shape npm never emits.
+Fixed by parsing both layouts (nested trees, `link:` entries skipped), diffing
+version changes as first-class changes, and narrowing the Go adapter's
+mutation catch-all to Go-owned files so npm's manifests can no longer be
+claimed with the wrong label. A no-op entry diff on a changed lockfile
+(`resolved`/`integrity` rewritten in place) now gates coarsely instead of
+silently.
+Pinned by *"lockfileVersion 3 `packages` layout is read, not just the legacy
+flat map"*, *"a version swap inside the lockfile is a named change, not
+silence"*, and *"an indirect mutation of a v3 lockfile names the package,
+labeled npm"*; all fail without the fix.
+
+### D21 — a file-tool write into node_modules/ or vendor/ was invisible
+
+**Severity: high.** The pre-execution write guard read only shell commands —
+`sed`, `tee`, `cp` and friends via `writtenPaths`. An `edit`/`write` tool call
+names its target in a tool-input field instead, and nothing looked there:
+
+```text
+edit { path: "node_modules/evil/index.js", ... }   -> was: proceeded silently
+write { file_path: "/repo/node_modules/…", ... }   -> was: proceeded silently
+```
+
+Guarded trees are not snapshotted (§1.8 records why), so the pre-execution
+shape is the **only** place this write is ever visible — the bash-side test
+existed, the file-tool side was the bypass. Found in the p4 lab. Fixed by
+`inspectNonShellWrite`: a write-named tool (`edit`, `write`, `patch`, `save`,
+`create`, `apply`, `notebook`) carrying a whole-token path value that hits a guard prefix
+(`VendorDrift`) or a watched manifest (`LockfileMutation`) are gated before the
+write lands. Reads are never taxed, and prose that mentions a guarded path
+carries quotes or parentheses and is excluded by the token shape.
+Residual, deliberate: detection is tool-name-shaped, so a host file tool named
+outside the pattern escapes this guard (manifests still reconcile via snapshot;
+guarded trees do not).
+Pinned by *"an edit-tool write into node_modules is gated, not only shell
+commands"* and *"an edit-tool write into a guarded tree is a VendorDrift before
+it lands"*; both fail without the fix.
+
 ---
 
 ## 4. Release readiness

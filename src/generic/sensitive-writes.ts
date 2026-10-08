@@ -164,3 +164,80 @@ export function inspectSensitiveWrites(
 
   return events;
 }
+
+/** Tool names that write the file their arguments name. Reads are never taxed. */
+const WRITE_TOOLS = /edit|write|patch|save|create|apply|notebook/i;
+
+/**
+ * A string that is nothing but a filesystem path: one token, no prose. Code
+ * content that merely mentions `vendor/` inside a require() carries quotes or
+ * parentheses and is excluded by construction.
+ */
+const PATH_LIKE = /^[A-Za-z0-9_@.~/+-]{1,512}$/;
+
+/**
+ * Writes to guarded trees through FILE tools, caught before they happen.
+ *
+ * The shell-side rules above read a command's operands; an `edit`/`write`
+ * tool call names its target in an input field instead, and nothing else was
+ * looking there. `node_modules/` and `vendor/` are not snapshotted, so the
+ * pre-execution shape is the only chance to see the write at all.
+ *
+ * Matching mirrors `writtenPaths`: suffix match against watched paths,
+ * prefix/contains against directory guards, `./` tolerated.
+ */
+export function inspectNonShellWrite(
+  toolName: string,
+  input: Readonly<Record<string, unknown>>,
+  watched: readonly string[],
+  prefixes: readonly string[],
+): readonly SupplyChainEvent[] {
+  if (watched.length === 0 && prefixes.length === 0) return [];
+  if (!WRITE_TOOLS.test(toolName)) return [];
+
+  const hits = new Map<string, "watched" | "prefix">();
+  for (const value of Object.values(input)) {
+    if (typeof value !== "string" || !PATH_LIKE.test(value)) continue;
+    const normalized = value.replace(/^\.\//, "");
+    for (const path of watched) {
+      if (normalized === path || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`)) {
+        hits.set(path, "watched");
+      }
+    }
+    for (const prefix of prefixes) {
+      if (normalized.startsWith(prefix) || normalized.includes(`/${prefix}`)) {
+        hits.set(prefix, "prefix");
+      }
+    }
+  }
+  if (hits.size === 0) return [];
+
+  const events: SupplyChainEvent[] = [];
+  for (const [hit, kind] of hits) {
+    events.push(
+      kind === "prefix"
+        ? {
+            eventClass: "VendorDrift",
+            ecosystem: GENERIC_ECOSYSTEM,
+            classification: "THIRD_PARTY_MUTATION",
+            artifact: hit,
+            summary:
+              `the ${toolName} tool writes vendored source under ${hit} directly. The ` +
+              `tree is what enforced builds run from, a hand-edited file in it no ` +
+              `longer matches the versions the manifest pins -- and with no checksum ` +
+              `or snapshot, nothing catches it later.`,
+          }
+        : {
+            eventClass: "LockfileMutation",
+            ecosystem: GENERIC_ECOSYSTEM,
+            classification: "THIRD_PARTY_MUTATION",
+            artifact: hit,
+            summary:
+              `the ${toolName} tool writes ${hit} directly, outside the package ` +
+              `manager. A dependency manifest rewritten this way never passes the ` +
+              `command gate.`,
+          },
+    );
+  }
+  return events;
+}

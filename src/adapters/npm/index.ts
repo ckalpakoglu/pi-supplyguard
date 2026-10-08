@@ -162,19 +162,40 @@ export function createNpmAdapter(): EcosystemAdapter {
           parsePackageLock(mutation.before ?? ""),
           parsePackageLock(mutation.after ?? ""),
         );
-        if (diff.added.length === 0 && diff.removed.length === 0) return [];
+        if (
+          diff.added.length === 0 &&
+          diff.removed.length === 0 &&
+          diff.changed.length === 0
+        ) {
+          // The file changed but no package moved: `resolved`/`integrity`
+          // rewritten in place is exactly how a mirror substitution looks,
+          // and nothing package-level would name it. Gate coarsely rather
+          // than stay silent.
+          return [
+            mutationEvent(
+              "LockfileMutation",
+              `${mutation.path} changed outside the SupplyGuard gate with no package-level ` +
+                `diff -- resolved URLs, integrity or metadata were rewritten in place`,
+            ),
+          ];
+        }
 
-        const names = diff.added.map((e) => `${e.name}@${e.version ?? "?"}`);
+        const names = [
+          ...diff.added.map((e) => `${e.name}@${e.version ?? "?"}`),
+          ...diff.changed.map(
+            (c) => `${c.name}@${c.from ?? "?"}→${c.to ?? "?"}${c.hasInstallScript === true ? " (install script)" : ""}`,
+          ),
+        ];
         const shown = names.length > 5 ? [...names.slice(0, 5), `… +${names.length - 5} more`] : names;
-        const events: SupplyChainEvent[] = [
+        return [
           mutationEvent(
             "LockfileMutation",
             `the lockfile changed outside the SupplyGuard gate ` +
-              `(${diff.added.length} package(s) added, ${diff.removed.length} removed)` +
+              `(${diff.added.length} package(s) added, ${diff.changed.length} changed, ` +
+              `${diff.removed.length} removed)` +
               (shown.length === 0 ? "" : `: ${shown.join(", ")}`),
           ),
         ];
-        return events;
       }
 
       // pnpm/yarn lockfiles: gated coarsely, named honestly.
