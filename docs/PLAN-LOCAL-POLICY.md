@@ -95,16 +95,16 @@ same commit, live Pi smoke for the host surface.
 
 Scope:
 
-- Rule schema + validation (`warn|ask|deny` only; unknown keys warn+ignore;
-  duplicate ids across layers → stricter wins + warn; ~200-rule cap with
-  warning).
+- Rule schema + validation (`warn|ask|deny` only; unknown keys warn+ignore).
+  Layers concatenate: no dedupe by id (dedupe let a project rule displace a
+  global one) and no rule cap (matching is microseconds per rule).
 - Matchers D8/D9: `command` on wrapper-stripped argv[0]; `argsContain`
   substring on any arg; `toolName`; `writePrefix`/`readPrefix` over shell
   operands AND file-tool path inputs (the `sensitive-writes.ts` semantics);
   `pathGlob`.
 - Engine fold + audit fields (rule id, reason, source layer: global/project).
-- `/supplyguard-status`: active rule count per source; config-notice for
-  rejected rules.
+- `/supplyguard-status`: active rules listed with their layer; config-notice
+  for rejected rules.
 - Config layering: global ∪ project, project may only add.
 
 Acceptance (tests):
@@ -114,8 +114,8 @@ Acceptance (tests):
   not audited (invariant 9 shape).
 - Wrapper/composition: `sudo git push --force`, `sh -c '…'`, `env X=y kubectl
   delete …`, heredoc-written protected prefix — all match.
-- Layering: project tightens global; project cannot weaken; duplicate id
-  resolves stricter with a warning.
+- Layering: project adds to global; a project rule with a global rule's id
+  cannot displace it.
 - Malformed rule ignored loudly; `decision: allow` rejected at load.
 - Headless: rule `ask` → deny (worker parity).
 - Path normalization: `./infra/x`, `infra/../infra/x`, absolute paths inside

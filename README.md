@@ -338,9 +338,9 @@ Matchers: `command`, `argsContain`, `toolName`, `writePrefix`, `readPrefix`,
 `pathGlob`; every key on a rule must hold. Decisions are `warn`, `ask` or
 `deny` — never `allow`: a rule can only tighten. Matching sees through
 wrappers (`sudo`, `env X=y`, `sh -c '…'`) and normalizes paths. Global and
-project rules are unioned; the same `id` in both keeps the stricter decision.
-A malformed rule is ignored with a warning, and `/supplyguard-status` shows
-how many rules are active. Limits are in
+project rules both apply: a project rule adds, it never replaces a global one,
+even under the same `id`. A malformed rule is ignored with a warning, and
+`/supplyguard-status` lists the active rules. Limits are in
 [`docs/KNOWN-GAPS.md` §1.18](docs/KNOWN-GAPS.md).
 
 ## Tools and commands

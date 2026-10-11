@@ -514,21 +514,15 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     }
   }
 
-  // M15: local policy rules. Matched BEFORE the harmless fast path: a rule
-  // may gate a call no adapter found interesting -- that is precisely its
-  // job, a rulebook for calls the built-ins do not know.
-  const ruleMatches =
-    ctx.policyRules === undefined || ctx.policyRules.length === 0
-      ? []
-      : matchPolicyRules(call, ctx.policyRules, ctx.repoRoot);
-  const ruleFindings = ruleMatches.map((match) =>
+  // M15: local policy rules, matched BEFORE the harmless fast path -- a rule
+  // exists to gate calls no adapter finds interesting.
+  const ruleFindings = matchPolicyRules(call, ctx.policyRules ?? [], ctx.repoRoot).map((rule) =>
     localFinding(
       "policy",
-      `rule:${match.rule.id}`,
-      match.rule.decision,
-      `Local policy rule "${match.rule.id}" (${match.rule.source}) matched this call: ` +
-        `${match.detail}.` +
-        (match.rule.reason === undefined ? "" : ` ${match.rule.reason}`),
+      `rule:${rule.id}`,
+      rule.decision,
+      `Local policy rule "${rule.id}" (${rule.source}) matched this call.` +
+        (rule.reason === undefined ? "" : ` ${rule.reason}`),
     ),
   );
 

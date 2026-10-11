@@ -20,12 +20,7 @@ import { isAbsolute, join } from "node:path";
 
 import { DEFAULT_PROFILE, maxProfile, parseProfile, type Profile } from "./profiles.ts";
 import { isEmptyDocument, parseYaml } from "./yaml.ts";
-import {
-  mergePolicyRules,
-  parsePolicyRules,
-  type PolicyRule,
-  type RuleSource,
-} from "../policy/rules.ts";
+import { parsePolicyRules, type PolicyRule, type RuleSource } from "../policy/rules.ts";
 
 /** SPEC 8.1 -- canonical configuration and state paths. */
 export interface SupplyGuardPaths {
@@ -258,9 +253,6 @@ export function tightenConfig(
     }
   }
 
-  const merged = mergePolicyRules(base.policyRules, layer.policyRules ?? [], layerName);
-  warnings.push(...merged.warnings);
-
   return {
     config: {
       version: 1,
@@ -270,7 +262,8 @@ export function tightenConfig(
       socket,
       jevEnabled,
       signalsEnabled,
-      policyRules: merged.rules,
+      // A union: a later layer adds rules, it can never remove or replace one.
+      policyRules: [...base.policyRules, ...(layer.policyRules ?? [])],
     },
     warnings,
   };

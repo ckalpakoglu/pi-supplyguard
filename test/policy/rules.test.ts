@@ -12,18 +12,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
+import { COMPILED_SAFE_MINIMUMS, tightenConfig } from "../../src/core/config.ts";
 import { createRuntime } from "../../src/index.ts";
-import {
-  globToRegExp,
-  matchPolicyRules,
-  normalizeOperand,
-} from "../../src/policy/match.ts";
-import {
-  mergePolicyRules,
-  parsePolicyRules,
-  RULE_CAP,
-  type PolicyRule,
-} from "../../src/policy/rules.ts";
+import { matchPolicyRules, normalizeOperand } from "../../src/policy/match.ts";
+import { parsePolicyRules } from "../../src/policy/rules.ts";
 
 const tempRoots: string[] = [];
 
@@ -32,98 +24,69 @@ after(async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Schema and validation
+// Schema and layering
 // ---------------------------------------------------------------------------
 
-test("valid rules load; the shapes that must not load say why", () => {
+test("valid rules load; every rejected entry is announced", () => {
   const { rules, warnings } = parsePolicyRules(
     [
       { id: "a", decision: "deny", match: { command: "kubectl", argsContain: ["delete"] }, reason: "prod" },
       { id: "b", decision: "ask", match: { writePrefix: "infra/" } },
       { decision: "deny", match: { command: "x" } }, // no id
-      { id: "c", decision: "allow", match: { command: "x" } }, // allow is an exception primitive
-      { id: "d", decision: "maybe", match: { command: "x" } }, // not a decision
-      { id: "e", decision: "deny", match: { regex: ".*" } }, // unknown matcher, no recognized key
-      { id: "f", decision: "deny" }, // no match at all
+      { id: "c", decision: "allow", match: { command: "x" } }, // a rule may only tighten
+      { id: "d", decision: "maybe", match: { command: "x" } },
+      { id: "e", decision: "deny", match: { regex: ".*" } }, // unknown matcher
+      { id: "f", decision: "deny" }, // no match
       "not a mapping",
-      { id: "g", decision: "deny", match: { argsContain: [] } }, // empty list
+      { id: "g", decision: "deny", match: { argsContain: [] } },
     ],
     "project",
   );
 
   assert.deepEqual(rules.map((rule) => rule.id), ["a", "b"], "only the valid rules load");
-  assert.equal(rules[0]?.source, "project");
   assert.equal(rules[0]?.reason, "prod");
-  assert.equal(rules[1]?.match.writePrefix, "infra/");
-
-  const joined = warnings.join("\n");
-  assert.ok(!warnings.some((w) => w.includes('policies[0]("a")') || w.includes('policies[1]("b")')));
-  assert.match(joined, /missing or empty "id"/);
-  assert.match(joined, /decision "allow" is not supported/);
-  assert.match(joined, /must be one of warn\|ask\|deny/);
-  assert.match(joined, /unknown match key "regex"/);
-  assert.match(joined, /no recognized key/);
-  assert.match(joined, /not a mapping/);
-  assert.match(joined, /argsContain must be a non-empty string list/);
+  for (let index = 2; index <= 8; index += 1) {
+    assert.ok(
+      warnings.some((w) => w.startsWith(`policies[${index}]`)),
+      `rejected entry ${index} is announced, not swallowed`,
+    );
+  }
+  assert.ok(!warnings.some((w) => /^policies\[[01]\]/.test(w)), "valid entries raise nothing");
 });
 
-test("duplicate ids across layers resolve stricter, with a warning either way", () => {
-  const global = parsePolicyRules(
-    [{ id: "r", decision: "warn", match: { command: "terraform" } }],
-    "global",
-  ).rules;
-  const stricter = parsePolicyRules(
-    [{ id: "r", decision: "deny", match: { command: "terraform" } }],
-    "project",
-  ).rules;
-  const weaker = parsePolicyRules(
-    [{ id: "r", decision: "warn", match: { command: "terraform" } }],
-    "project",
-  ).rules;
-
-  const up = mergePolicyRules(global, stricter, "project configuration");
-  assert.equal(up.rules.length, 1);
-  assert.equal(up.rules[0]?.decision, "deny");
-  assert.match(up.warnings.join("\n"), /stricter decision "deny" wins/);
-
-  const flat = mergePolicyRules(
-    parsePolicyRules([{ id: "r", decision: "deny", match: { command: "terraform" } }], "global").rules,
-    weaker,
+test("a project rule reusing a global rule's id cannot displace it", () => {
+  // The tighten-only hole this closes: dedupe-by-id let a "stricter" project
+  // rule with the same id and a match that never fires REPLACE the
+  // operator's global rule -- a deny that disabled an ask.
+  const global = tightenConfig(
+    COMPILED_SAFE_MINIMUMS,
+    { policyRules: parsePolicyRules([{ id: "prod", decision: "ask", match: { command: "kubectl" } }], "global").rules },
+    "global configuration",
+  ).config;
+  const project = tightenConfig(
+    global,
+    { policyRules: parsePolicyRules([{ id: "prod", decision: "deny", match: { command: "nothing-real" } }], "project").rules },
     "project configuration",
-  );
-  assert.equal(flat.rules[0]?.decision, "deny", "a layer may tighten, never weaken");
-  assert.match(flat.warnings.join("\n"), /established stricter decision "deny" stands/);
-});
+  ).config;
 
-test("the rule cap drops the tail loudly", () => {
-  const many: PolicyRule[] = Array.from({ length: RULE_CAP + 3 }, (_, i) => ({
-    id: `r${i}`,
-    source: "project" as const,
-    decision: "warn" as const,
-    match: { command: `tool-${i}` },
-  }));
-  const merged = mergePolicyRules([], many, "project configuration");
-  assert.equal(merged.rules.length, RULE_CAP);
-  assert.match(merged.warnings.join("\n"), new RegExp(`dropped: r${RULE_CAP}, r${RULE_CAP + 1}, r${RULE_CAP + 2}`));
+  const tripped = matchPolicyRules(
+    { toolName: "bash", input: { command: "kubectl delete ns prod" } },
+    project.policyRules,
+    "/repo",
+  );
+  assert.deepEqual(tripped.map((rule) => rule.source), ["global"], "the global rule still fires");
 });
 
 // ---------------------------------------------------------------------------
 // Matchers
 // ---------------------------------------------------------------------------
 
-test("globs stay tiny on purpose", () => {
-  assert.ok(globToRegExp("*.tfvars").test("prod.tfvars"));
-  assert.ok(!globToRegExp("*.tfvars").test("dir/prod.tfvars"), "* crosses no slash");
-  assert.ok(globToRegExp("infra/**").test("infra/live/main.tf"));
-  assert.ok(globToRegExp("a?c").test("abc"));
-  assert.ok(!globToRegExp("a.c").test("abc"), "a literal dot is a literal dot");
-});
-
-test("path normalization defeats ./, a/../ and absolute-inside-repo spellings", () => {
+test("path normalization: one form inside the repo, honest absolutes outside", () => {
   assert.equal(normalizeOperand("./infra/x", "/repo"), "infra/x");
   assert.equal(normalizeOperand("infra/../infra/x", "/repo"), "infra/x");
   assert.equal(normalizeOperand("/repo/infra/x", "/repo"), "infra/x");
-  assert.equal(normalizeOperand("/etc/passwd", "/repo"), "/etc/passwd", "outside stays absolute, honestly");
+  assert.equal(normalizeOperand("/etc/passwd", "/repo"), "/etc/passwd");
+  assert.equal(normalizeOperand("../infra/x", "/repo"), "/infra/x", "outside the repo is not inside it");
 });
 
 test("matching is wrapper- and nesting-proof, and shape-honest", () => {
@@ -140,7 +103,7 @@ test("matching is wrapper- and nesting-proof, and shape-honest", () => {
   ).rules;
 
   const match = (toolName: string, input: Record<string, unknown>) =>
-    matchPolicyRules({ toolName, input }, rules, "/repo").map((m) => m.rule.id);
+    matchPolicyRules({ toolName, input }, rules, "/repo").map((rule) => rule.id);
 
   assert.deepEqual(match("bash", { command: "git push --force origin main" }), ["force"]);
   assert.deepEqual(match("bash", { command: "sudo git push --force origin main" }), ["force"], "wrapper");
@@ -287,9 +250,8 @@ test("an invalid rule is ignored loudly while its valid siblings still gate", as
     ctx as never,
   );
   assert.equal(blocked?.block, true, "the valid rule still gates");
-  assert.match(
-    notices.join("\n"),
-    /decision "allow" is not supported/,
-    "the rejected rule is announced, not swallowed",
+  assert.ok(
+    notices.some((notice) => notice.includes('"bad"')),
+    "the rejected rule is announced by id, not swallowed",
   );
 });

@@ -542,8 +542,8 @@ decision recorded in `docs/PLAN-LOCAL-POLICY.md`:
   never the bytes of a file. `python3 rewrite.py` touching `infra/` is
   invisible to a `writePrefix: infra/` rule unless the path appears on the
   command line (the same boundary as §1.1's sensitive-write detection).
-- **No regex.** Exact command names, substring arguments, prefixes and a
-  three-token glob. A richer grammar is attack surface and a second parser.
+- **No regex.** Exact command names, substring arguments, prefixes and
+  Node's `path.matchesGlob`. A richer grammar is attack surface.
 - **Shape, not intent.** `argsContain: ["--force"]` matches `--force-with-lease`
   too — substring semantics, stated in SPEC — and a variable that expands to
   the flag (`git push $F`) is not seen. The shell parser marks such words

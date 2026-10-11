@@ -435,7 +435,7 @@ policies:
 ```
 
 Matchers: `command`, `argsContain`, `toolName`, `writePrefix`, `readPrefix`,
-`pathGlob` (`*` within a segment, `**` across, `?` one character). All keys on
+`pathGlob` (Node's `path.matchesGlob`: `*` within a segment, `**` across). All keys on
 one rule must hold. Matching reuses the adapters' shell parser and the
 sensitive-write shapes, so `sudo git push --force` and
 `sh -c 'git push --force'` match like the bare command; path operands are
@@ -447,12 +447,12 @@ Composition follows the §8.2 lattice:
 - a rule may decide `warn`, `ask` or `deny`; `allow` is rejected at load,
   because a standing exception could weaken a stricter layer;
 - rule findings fold with every other finding by most-restrictive (§6.1);
-- global and project rules are unioned; the same `id` in both layers keeps
-  the stricter decision, with a warning;
+- global and project rules are concatenated: a project rule adds to the
+  global rules and can never remove or replace one, even under the same
+  `id` — both apply;
 - a malformed rule is ignored with a warning in status and audit; its valid
   siblings still apply. Ignoring a rule loses protection but cannot open a
   hole, since rules only tighten;
-- at most 200 rules load; the tail beyond that is dropped loudly;
 - a matching rule takes a call off the harmless fast path (§5.1): the rule
   is the operator saying this call is not harmless here. A call no rule
   matches is not audited and leaves the machine for nothing, as before.

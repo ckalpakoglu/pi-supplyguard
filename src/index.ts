@@ -950,13 +950,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
             : `${countIdentities(project.trust)} identities (${project.trust.sources.join(", ")})`
         }`,
         `  Local policy rules   ${
-          config.policyRules.length === 0
-            ? "none declared"
-            : `${config.policyRules.length} active (${
-                config.policyRules.filter((rule) => rule.source === "global").length
-              } global, ${
-                config.policyRules.filter((rule) => rule.source === "project").length
-              } project)`
+          config.policyRules.map((rule) => `${rule.id} (${rule.source})`).join(", ") || "none declared"
         }`,
         `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
         `  Manifest baseline    ${

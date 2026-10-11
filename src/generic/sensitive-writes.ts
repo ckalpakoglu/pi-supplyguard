@@ -165,13 +165,11 @@ export function inspectSensitiveWrites(
   return events;
 }
 
-/** Tool names that write the file their arguments name. Reads are never taxed. */
-const WRITE_TOOLS = /edit|write|patch|save|create|apply|notebook/i;
-
-/** The single write-tool convention, shared with local policy rules. */
-export function isWriteShapedToolCall(toolName: string): boolean {
-  return WRITE_TOOLS.test(toolName);
-}
+/**
+ * Tool names that write the file their arguments name; reads are never taxed.
+ * Shared with local policy rules (`writePrefix`).
+ */
+export const WRITE_TOOLS = /edit|write|patch|save|create|apply|notebook/i;
 
 /**
  * A string that is nothing but a filesystem path: one token, no prose. Code
@@ -180,11 +178,7 @@ export function isWriteShapedToolCall(toolName: string): boolean {
  */
 const PATH_LIKE = /^[A-Za-z0-9_@.~/+-]{1,512}$/;
 
-/**
- * The path-shaped string values of a tool input, verbatim. The single
- * convention for what counts as "a file argument" across write guards and
- * local policy rules -- one definition, no drift.
- */
+/** The path-shaped string values of a tool input: one definition for every guard and rule. */
 export function pathLikeInputValues(input: Readonly<Record<string, unknown>>): readonly string[] {
   return Object.values(input).filter(
     (value): value is string => typeof value === "string" && PATH_LIKE.test(value),
@@ -212,8 +206,7 @@ export function inspectNonShellWrite(
   if (!WRITE_TOOLS.test(toolName)) return [];
 
   const hits = new Map<string, "watched" | "prefix">();
-  for (const value of Object.values(input)) {
-    if (typeof value !== "string" || !PATH_LIKE.test(value)) continue;
+  for (const value of pathLikeInputValues(input)) {
     const normalized = value.replace(/^\.\//, "");
     for (const path of watched) {
       if (normalized === path || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`)) {
