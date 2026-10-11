@@ -415,6 +415,51 @@ go:
   vendor: enforce
 ```
 
+## 8.5 Local Policy Rules
+
+Added by M15 (`docs/PLAN-LOCAL-POLICY.md`). Operator-authored rules, enforced
+offline in every profile, before execution:
+
+```yaml
+policies:
+  - id: no-force-push
+    match:
+      command: git             # wrapper-stripped parsed argv[0]
+      argsContain: ["--force"] # any argument containing any listed string
+    decision: ask              # warn | ask | deny -- never allow
+    reason: "rewrites shared history"
+  - id: protect-infra
+    match:
+      writePrefix: infra/      # shell writers AND write-shaped file tools
+    decision: deny
+```
+
+Matchers: `command`, `argsContain`, `toolName`, `writePrefix`, `readPrefix`,
+`pathGlob` (`*` within a segment, `**` across, `?` one character). All keys on
+one rule must hold. Matching reuses the adapters' shell parser and the
+sensitive-write shapes, so `sudo git push --force` and
+`sh -c 'git push --force'` match like the bare command; path operands are
+normalized (`./x`, `a/../x`, absolute-inside-repo) before comparison. Rules
+see shapes and paths, never file content.
+
+Composition follows the §8.2 lattice:
+
+- a rule may decide `warn`, `ask` or `deny`; `allow` is rejected at load,
+  because a standing exception could weaken a stricter layer;
+- rule findings fold with every other finding by most-restrictive (§6.1);
+- global and project rules are unioned; the same `id` in both layers keeps
+  the stricter decision, with a warning;
+- a malformed rule is ignored with a warning in status and audit; its valid
+  siblings still apply. Ignoring a rule loses protection but cannot open a
+  hole, since rules only tighten;
+- at most 200 rules load; the tail beyond that is dropped loudly;
+- a matching rule takes a call off the harmless fast path (§5.1): the rule
+  is the operator saying this call is not harmless here. A call no rule
+  matches is not audited and leaves the machine for nothing, as before.
+
+A headless `ask` from a rule fails closed like every other `ask`, so delegated
+workers inherit the operator's rules with no way past them.
+
 ---
 
 # 9. Go Adapter — Project and Vendor Model

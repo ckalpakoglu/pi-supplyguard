@@ -168,12 +168,28 @@ export function inspectSensitiveWrites(
 /** Tool names that write the file their arguments name. Reads are never taxed. */
 const WRITE_TOOLS = /edit|write|patch|save|create|apply|notebook/i;
 
+/** The single write-tool convention, shared with local policy rules. */
+export function isWriteShapedToolCall(toolName: string): boolean {
+  return WRITE_TOOLS.test(toolName);
+}
+
 /**
  * A string that is nothing but a filesystem path: one token, no prose. Code
  * content that merely mentions `vendor/` inside a require() carries quotes or
  * parentheses and is excluded by construction.
  */
 const PATH_LIKE = /^[A-Za-z0-9_@.~/+-]{1,512}$/;
+
+/**
+ * The path-shaped string values of a tool input, verbatim. The single
+ * convention for what counts as "a file argument" across write guards and
+ * local policy rules -- one definition, no drift.
+ */
+export function pathLikeInputValues(input: Readonly<Record<string, unknown>>): readonly string[] {
+  return Object.values(input).filter(
+    (value): value is string => typeof value === "string" && PATH_LIKE.test(value),
+  );
+}
 
 /**
  * Writes to guarded trees through FILE tools, caught before they happen.

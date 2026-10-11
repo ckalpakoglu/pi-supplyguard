@@ -671,6 +671,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       justifications: session.justifications,
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
       trust: project.trust,
+      policyRules: project.loaded.config.policyRules,
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
@@ -947,6 +948,15 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           project.trust.empty
             ? "none — typo/repository-squatting analysis is DISABLED"
             : `${countIdentities(project.trust)} identities (${project.trust.sources.join(", ")})`
+        }`,
+        `  Local policy rules   ${
+          config.policyRules.length === 0
+            ? "none declared"
+            : `${config.policyRules.length} active (${
+                config.policyRules.filter((rule) => rule.source === "global").length
+              } global, ${
+                config.policyRules.filter((rule) => rule.source === "project").length
+              } project)`
         }`,
         `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
         `  Manifest baseline    ${

@@ -20,6 +20,12 @@ import { isAbsolute, join } from "node:path";
 
 import { DEFAULT_PROFILE, maxProfile, parseProfile, type Profile } from "./profiles.ts";
 import { isEmptyDocument, parseYaml } from "./yaml.ts";
+import {
+  mergePolicyRules,
+  parsePolicyRules,
+  type PolicyRule,
+  type RuleSource,
+} from "../policy/rules.ts";
 
 /** SPEC 8.1 -- canonical configuration and state paths. */
 export interface SupplyGuardPaths {
@@ -110,6 +116,8 @@ export interface SupplyGuardConfig {
   readonly jevEnabled: boolean;
   /** M14: optional repository-signal provider (class C). Default off. */
   readonly signalsEnabled: boolean;
+  /** M15: local policy rules, global layer unioned with the project layer. */
+  readonly policyRules: readonly PolicyRule[];
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -123,6 +131,7 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   socket: "auto",
   jevEnabled: false,
   signalsEnabled: false,
+  policyRules: Object.freeze([] as readonly PolicyRule[]),
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -133,6 +142,7 @@ export interface ConfigLayer {
   readonly socket?: SocketMode;
   readonly jevEnabled?: boolean;
   readonly signalsEnabled?: boolean;
+  readonly policyRules?: readonly PolicyRule[];
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -248,6 +258,9 @@ export function tightenConfig(
     }
   }
 
+  const merged = mergePolicyRules(base.policyRules, layer.policyRules ?? [], layerName);
+  warnings.push(...merged.warnings);
+
   return {
     config: {
       version: 1,
@@ -257,6 +270,7 @@ export function tightenConfig(
       socket,
       jevEnabled,
       signalsEnabled,
+      policyRules: merged.rules,
     },
     warnings,
   };
@@ -274,7 +288,7 @@ export interface ParsedLayer {
  * swallowing `socket:` today and honouring it after an upgrade would change
  * enforcement without review. Malformed values are ignored, never guessed.
  */
-export function parseConfigLayer(raw: unknown): ParsedLayer {
+export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): ParsedLayer {
   const warnings: string[] = [];
 
   if (isEmptyDocument(raw)) return { layer: {}, warnings };
@@ -291,6 +305,7 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     socket?: SocketMode;
     jevEnabled?: boolean;
     signalsEnabled?: boolean;
+    policyRules?: readonly PolicyRule[];
   } = {};
 
   if ("profile" in doc) {
@@ -362,7 +377,20 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     }
   }
 
-  const known = new Set(["version", "profile", "releaseAge", "audit", "socket", "jev", "signals"]);
+  const policies = parsePolicyRules(doc["policies"], source);
+  warnings.push(...policies.warnings);
+  if (policies.rules.length > 0) layer.policyRules = policies.rules;
+
+  const known = new Set([
+    "version",
+    "profile",
+    "releaseAge",
+    "audit",
+    "socket",
+    "jev",
+    "signals",
+    "policies",
+  ]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
       warnings.push(`unsupported configuration key "${key}"; ignored in this version.`);
@@ -423,7 +451,7 @@ async function loadLayerFile(kind: ConfigSourceKind, path: string): Promise<File
     };
   }
 
-  const interpreted = parseConfigLayer(parsed.value);
+  const interpreted = parseConfigLayer(parsed.value, kind === "global" ? "global" : "project");
   return {
     source: { kind, path, status: "applied", notes: interpreted.warnings },
     layer: interpreted.layer,

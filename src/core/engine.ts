@@ -61,6 +61,8 @@ import {
   readManifestSnapshot,
   type ManifestSnapshot,
 } from "./manifest.ts";
+import { matchPolicyRules } from "../policy/match.ts";
+import type { PolicyRule } from "../policy/rules.ts";
 import {
   describeJustification,
   JUSTIFY_TOOL,
@@ -158,6 +160,11 @@ export interface EngineContext {
    * ownership would produce confident nonsense.
    */
   readonly trust?: TrustCorpus;
+  /**
+   * Local policy rules (M15): operator-authored match -> decision rules,
+   * folded as findings by most-restrictive. Absent = none declared.
+   */
+  readonly policyRules?: readonly PolicyRule[];
 }
 
 export interface EngineOutcome {
@@ -507,6 +514,24 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     }
   }
 
+  // M15: local policy rules. Matched BEFORE the harmless fast path: a rule
+  // may gate a call no adapter found interesting -- that is precisely its
+  // job, a rulebook for calls the built-ins do not know.
+  const ruleMatches =
+    ctx.policyRules === undefined || ctx.policyRules.length === 0
+      ? []
+      : matchPolicyRules(call, ctx.policyRules, ctx.repoRoot);
+  const ruleFindings = ruleMatches.map((match) =>
+    localFinding(
+      "policy",
+      `rule:${match.rule.id}`,
+      match.rule.decision,
+      `Local policy rule "${match.rule.id}" (${match.rule.source}) matched this call: ` +
+        `${match.detail}.` +
+        (match.rule.reason === undefined ? "" : ` ${match.rule.reason}`),
+    ),
+  );
+
   const classification = mostSevereClassification(
     inspection.classification,
     ...mutationEvents.map((event) => event.classification),
@@ -518,6 +543,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   if (
     classification === "SUPPLY_CHAIN_IRRELEVANT" &&
     inspection.events.length === 0 &&
+    ruleFindings.length === 0 &&
     mutations.length === 0 &&
     errors.length === 0
   ) {
@@ -707,6 +733,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
 
   let evaluation = evaluateLocal([
     ...baselineFindings(classification, events, ctx.profile),
+    ...ruleFindings,
     ...justified.findings,
     ...uninspected,
     ...cooldown,

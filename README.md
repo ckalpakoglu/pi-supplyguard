@@ -299,8 +299,9 @@ compiled safe minimums
 Each layer may only tighten the previous one. Supported keys today: `profile`,
 `releaseAge.minimumDays`, `audit.enabled`, `socket.enabled`
 (`off` / `auto` / `required`), `jev.enabled`, `signals.enabled` (both default
-off); unknown keys are ignored with a warning rather than silently accepted.
-Project configuration is re-read within a few seconds of change.
+off) and `policies` (below); unknown keys are ignored with a warning rather
+than silently accepted. Project configuration is re-read within a few seconds
+of change.
 
 The optional analyzers read credentials from the environment, never from
 configuration files: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) for Jev,
@@ -313,6 +314,34 @@ profile: hardened
 audit:
   enabled: true
 ```
+
+### Local policy rules
+
+Your own offline rules, enforced before execution in every profile
+([`docs/SPEC.md` §8.5](docs/SPEC.md)):
+
+```yaml
+policies:
+  - id: no-force-push
+    match: { command: git, argsContain: ["--force"] }
+    decision: ask
+    reason: "rewrites shared history"
+  - id: protect-infra
+    match: { writePrefix: infra/ }
+    decision: deny
+  - id: no-tfvars
+    match: { pathGlob: "*.tfvars" }
+    decision: deny
+```
+
+Matchers: `command`, `argsContain`, `toolName`, `writePrefix`, `readPrefix`,
+`pathGlob`; every key on a rule must hold. Decisions are `warn`, `ask` or
+`deny` — never `allow`: a rule can only tighten. Matching sees through
+wrappers (`sudo`, `env X=y`, `sh -c '…'`) and normalizes paths. Global and
+project rules are unioned; the same `id` in both keeps the stricter decision.
+A malformed rule is ignored with a warning, and `/supplyguard-status` shows
+how many rules are active. Limits are in
+[`docs/KNOWN-GAPS.md` §1.18](docs/KNOWN-GAPS.md).
 
 ## Tools and commands
 

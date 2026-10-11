@@ -530,6 +530,30 @@ CI (`.github/workflows/`) runs the hermetic suite on every push and the live
 contracts weekly; both pin their actions to full commit SHAs, which is what
 SupplyGuard itself demands of a workflow.
 
+### 1.18 Local policy rules: shapes and paths, by design
+
+M15 lets the operator add offline rules (`policies:` in configuration, SPEC
+§8.5). What a rule can see is deliberately narrow, and each limit is a
+decision recorded in `docs/PLAN-LOCAL-POLICY.md`:
+
+- **No `allow` rules.** A rule can only tighten. Silencing a specific warning
+  is a one-shot prompt decision, not standing configuration.
+- **No content matching.** Rules see argv, tool names and path operands —
+  never the bytes of a file. `python3 rewrite.py` touching `infra/` is
+  invisible to a `writePrefix: infra/` rule unless the path appears on the
+  command line (the same boundary as §1.1's sensitive-write detection).
+- **No regex.** Exact command names, substring arguments, prefixes and a
+  three-token glob. A richer grammar is attack surface and a second parser.
+- **Shape, not intent.** `argsContain: ["--force"]` matches `--force-with-lease`
+  too — substring semantics, stated in SPEC — and a variable that expands to
+  the flag (`git push $F`) is not seen. The shell parser marks such words
+  `expanded`; rules do not yet treat that as a match.
+- **Path normalization is lexical.** `./x`, `a/../x` and absolute paths inside
+  the repository are folded; symlinks are not resolved.
+- **Rule matches are not audited separately** from the decision they feed:
+  the audit record carries the rule's finding (`rule:<id>`), not a per-rule
+  hit counter.
+
 ---
 
 ## 2. Deliberate behaviors that can look like gaps
