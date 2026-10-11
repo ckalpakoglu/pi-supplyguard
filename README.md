@@ -47,12 +47,13 @@ threat model is [`docs/SPEC.md` §3](docs/SPEC.md); in summary:
 ## What is enforced today
 
 **Honesty first:** this section describes the present, not the roadmap.
-Milestones M1–M9 plus the zero-day hardening line M10–M14 are complete —
+Milestones M1–M9, the zero-day hardening line M10–M14, and M15 are complete —
 Pi skeleton, the Go command gate, the manifest engine, the human trust gate,
 identity protection, OSV, Socket scans, generic policies, adversarial
 hardening, local content evidence, hermetic builds and vendor quarantine,
-bypass closure, the npm adapter, and freshness (replay corpus, live contract
-tests, homoglyphs, corpus tooling, optional repository signals). Everything in
+bypass closure, the npm adapter, freshness (replay corpus, live contract
+tests, homoglyphs, corpus tooling, optional repository signals), and local
+policy rules. Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**;
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
@@ -63,6 +64,11 @@ Enforced now:
   operations such as `ls` or `git status` are neither blocked nor flagged.
   Unreadable or unrecognized risky commands are `UNKNOWN_RISK` and fail
   conservative (ask / ask / deny by profile).
+- **Local policy rules:** your own rules in configuration — match a command,
+  an argument, a tool, or a path, and decide `warn`, `ask` or `deny` —
+  enforced offline, in every profile, before execution, through the same
+  wrapper-proof parser as everything else. A rule can only tighten. See
+  [Local policy rules](#local-policy-rules).
 - **Go command gate** (shell-aware, never a prefix match): `go get`,
   `go install`, `go mod …`, `go env`, `go work` and third-party
   `go run module@version` are recognized through wrappers and composition —
@@ -124,10 +130,11 @@ Enforced now:
 - **Release cooldown:** a version published inside the cooldown window
   (10 days default) warns in `standard`, denies with a one-shot override in
   `hardened`/`paranoid` (`paranoid` demands a written reason). Dates come
-  from the Go module proxy — the only outbound request SupplyGuard makes;
-  `GOPRIVATE`, `GONOPROXY` and `GOPROXY=off` are honored before a request is
-  built, so a private module is never named to a public service. A proxy that
-  cannot answer warns below `paranoid` and fails closed in it (SPEC §17.3).
+  from the Go module proxy. `GOPRIVATE`, `GONOPROXY` and `GOPROXY=off` are
+  honored before any outbound request is built — proxy, OSV, or an opt-in
+  provider — so a private module is never named to a public service. A proxy
+  that cannot answer warns below `paranoid` and fails closed in it
+  (SPEC §17.3).
 - **Scoped overrides:** an override waives one denial, for one artifact at one
   version, for one execution, audited with its reason. Only the cooldown opts
   into being waivable — a floating version, a checksum bypass or a missing
@@ -244,6 +251,7 @@ the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 | Behavior | standard | hardened | paranoid |
 |---|---|---|---|
 | Harmless operations (`ls`, `git status`, `gofmt`, reading files) | Allow | Allow | Allow |
+| Local policy rule match (your `policies:`) | the rule's decision | the rule's decision | the rule's decision |
 | Unversioned / `@latest` / floating dependency or tool op | Deny | Deny | Deny |
 | Exact-version dependency add/upgrade/replace, tool install, third-party execution | Ask | Ask | Ask |
 | The same, with no recorded justification | Deny | Deny | Deny |
@@ -375,6 +383,7 @@ Pi tool_call
 → ecosystem adapter (Go, npm today) → normalized supply-chain events, from the
   command AND from any manifest change nobody approved
 → project state (vendor model), once its ask-once questions are answered
+→ local policy rules: the operator's own, offline (warn / ask / deny)
 → local content scan of every artifact heading for a trust decision
 → profile baseline + findings, local and external (most restrictive wins)
 → ASK prompts the human (headless: deny)
@@ -393,6 +402,7 @@ src/adapters/       ecosystem adapters (Go, npm) behind a registry
 src/generic/        ecosystem-agnostic policy: shell parsing, installer
                     pipelines, sensitive writes, GitHub Actions references
 src/analyzers/      identity analysis and the local content scanner
+src/policy/         local policy rules: schema and matching (offline)
 src/providers/      external providers (Socket CLI, optional Jev and signals)
 types/              hand-written declarations for the host extension API
 test/               the suite every rule above is pinned by
@@ -409,8 +419,9 @@ added as event producers/verifiers without redesigning it.
 npm run check     # typecheck (tsc --noEmit) + tests (node --test)
 ```
 
-The suite (468 tests, Node's built-in runner, no test framework dependency)
-includes Go and npm command parsing, shell wrapper/bypass cases, semantic
+The suite (477 tests, Node's built-in runner, no test framework dependency)
+includes Go and npm command parsing, shell wrapper/bypass cases, local policy
+rule matching and layering, semantic
 `go.mod`/`go.sum`/lockfile diffing (both npm lockfile layouts), manifest
 snapshots and end-to-end `sed`/script reconciliation through the real runtime,
 vendor drift and quarantine, profile decision contract tables, configuration
@@ -438,6 +449,11 @@ problem.
 - [`docs/SPEC.md`](docs/SPEC.md) — canonical product and security design.
 - [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) — what is not enforced yet,
   deliberate decisions, and the defect log.
+- [`docs/PLAN-LOCAL-POLICY.md`](docs/PLAN-LOCAL-POLICY.md) — roadmap: local
+  policy rules (M15, done), sensitive-data rails (M16), paranoid-only
+  execution classifier (M17), hardening (M18).
+- [`docs/PLAN-ZERO-DAY.md`](docs/PLAN-ZERO-DAY.md) — the M10–M14 zero-day
+  hardening plan.
 - [`SECURITY.md`](SECURITY.md) — security policy and scope.
 
 ## License

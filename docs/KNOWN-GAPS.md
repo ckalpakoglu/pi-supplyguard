@@ -1,8 +1,9 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M6, M8 and M9 complete. M7 complete for scans and provider
-health; Socket Firewall deliberately not implemented (§1.5).
-**Last updated:** 2026-09-02
+**Status:** M1–M6 and M8–M15 complete. M7 complete for scans and provider
+health; Socket Firewall deliberately not implemented (§1.5). Next: M16–M18
+(`docs/PLAN-LOCAL-POLICY.md`).
+**Last updated:** 2026-10-11
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
 a security control that overstates its coverage is worse than none: it converts

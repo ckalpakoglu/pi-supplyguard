@@ -1,7 +1,8 @@
 # PLAN — Local policy: deterministic rules, sensitive-data rails, execution classifier
 
-Status: design agreed 2026-10-11; nothing implemented yet. This document is
-the roadmap. The canonical design conversation is summarized in §1; the
+Status: design agreed 2026-10-11. **M15 done** (`4b9cf41`, simplified in
+`4b4279a`; SPEC §8.5, KNOWN-GAPS §1.18). M16–M18 not started. This document
+is the roadmap. The canonical design conversation is summarized in §1; the
 milestones in §3 are the build order. Follow `docs/SPEC.md` where this plan is
 ambiguous, and amend SPEC (not this file) when a milestone lands.
 
