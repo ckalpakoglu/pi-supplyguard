@@ -58,8 +58,13 @@ const EGRESS_TOOLS = new Set(["curl", "wget", "scp", "sftp", "rsync", "nc", "nca
 /** Tools that only name a file: no content leaves the disk. */
 const METADATA_TOOLS = new Set(["ls", "stat", "du", "find", "basename", "dirname", "echo", "printf", "test", "[", "true", "false"]);
 
-/** Flags whose value is a path USED, not transported (`ssh -i key`, `rsync -e`). */
-const PATH_VALUE_FLAGS = new Set(["-i", "-F", "-o", "-e", "-E", "--identity", "--identity-file", "--config"]);
+/**
+ * Tools that USE a key or config path passed by flag (`ssh -i key`,
+ * `scp -F config`) rather than reading or sending it. Scoped per tool: the
+ * same `-F` on curl is a form upload.
+ */
+const KEY_USERS = new Set(["ssh", "scp", "sftp", "rsync", "git", "ssh-add", "ssh-keygen", "sshfs"]);
+const KEY_FLAGS = new Set(["-i", "-F", "-e", "--identity", "--identity-file", "--config"]);
 
 /**
  * Is this operand a sensitive path? `@file` (curl body), quotes and a remote
@@ -122,7 +127,7 @@ export function sensitiveAccessFromCommands(
 ): readonly SupplyChainEvent[] {
   const events: SupplyChainEvent[] = [];
   const seen = new Set<string>();
-  for (const command of commands) {
+  for (const [index, command] of commands.entries()) {
     const head = command.argv[0] !== undefined ? commandName(command.argv[0].text) : "";
     if (head === "") continue;
 
@@ -133,13 +138,22 @@ export function sensitiveAccessFromCommands(
       if (word.text.startsWith("-")) {
         // A flag's value is a path USED (`ssh -i key`, `scp -i key`), not
         // content read into the agent's context or sent anywhere.
-        if (PATH_VALUE_FLAGS.has(word.text) || word.text.startsWith("--identity")) {
+        if (KEY_USERS.has(head) && (KEY_FLAGS.has(word.text) || word.text.startsWith("--identity"))) {
           i += 1;
+          continue;
+        }
+        // `--post-file=.env`, `-F file=@.env`: the value is joined on.
+        const joined = word.text.slice(word.text.indexOf("=") + 1);
+        if (word.text.includes("=") && isSensitivePath(joined.replace(/^\w+=/, ""), extra)) {
+          operand = joined;
+          break;
         }
         continue;
       }
-      if (isSensitivePath(word.text, extra)) {
-        operand = word.text;
+      // `-F file=@.env` carries the value as its own `key=@path` word.
+      const value = /^\w+=@/.test(word.text) ? word.text.slice(word.text.indexOf("=") + 1) : word.text;
+      if (isSensitivePath(value, extra)) {
+        operand = value;
         break;
       }
     }
@@ -147,12 +161,26 @@ export function sensitiveAccessFromCommands(
     if (seen.has(operand)) continue;
     seen.add(operand);
 
+    // `cat .env | base64 | curl -d @- …`: a read piped (through any stages)
+    // into a network tool is the same exfiltration as naming the file to it.
+    // Only this command's own pipeline counts; `;`/`&&` end it.
+    let pipedToEgress = false;
+    for (const next of commands.slice(index + 1)) {
+      if (next.precededBy !== "|" && next.precededBy !== "|&") break;
+      const tool = next.argv[0] !== undefined ? commandName(next.argv[0].text) : "";
+      if (EGRESS_TOOLS.has(tool)) {
+        pipedToEgress = true;
+        break;
+      }
+    }
+
     events.push(
-      EGRESS_TOOLS.has(head)
+      EGRESS_TOOLS.has(head) || pipedToEgress
         ? event(
             "deny",
-            `\`${head}\` names ${operand}, a sensitive path, in a command that sends data ` +
-              `to the network — the exfiltration shape, denied in every profile`,
+            `\`${head}\` ${pipedToEgress ? "pipes" : "names"} ${operand}, a sensitive path, ` +
+              `${pipedToEgress ? "into" : "in"} a command that sends data to the network — ` +
+              `the exfiltration shape, denied in every profile`,
             operand,
           )
         : event(

@@ -16,6 +16,7 @@ import { test } from "node:test";
 import { lookupReleaseDate } from "../../src/adapters/go/proxy.ts";
 import { lookupVulnerabilities } from "../../src/adapters/go/osv.ts";
 import { createSocketProvider } from "../../src/providers/socket/index.ts";
+import { createExecutionClassifier } from "../../src/providers/jev/index.ts";
 
 const live = process.env.LIVE === "1";
 
@@ -44,3 +45,20 @@ test("the installed Socket CLI answers health and a score", { skip: !live }, asy
   const result = await provider.checkArtifact("go", "github.com/google/uuid", "v1.6.0");
   assert.equal(result.kind, "scanned", JSON.stringify(result));
 });
+
+// M18, D18's lesson applied on day one: every classifier test injects its
+// transport, so the real endpoint needs its own canary. Self-skips without a
+// key; a benign command must come back without an "unavailable" warning.
+const classifierKey = process.env.TYPESAFE_API_KEY ?? process.env.JEV_API_KEY ?? "";
+test(
+  "the execution classifier endpoint answers a real verdict",
+  { skip: !live || classifierKey === "" },
+  async () => {
+    const classifier = createExecutionClassifier({ enabled: true, apiKey: classifierKey });
+    const findings = await classifier.classify({ command: "mkdir build && go test ./..." });
+    assert.ok(
+      !findings.some((finding) => finding.code === "classifier-unavailable"),
+      JSON.stringify(findings),
+    );
+  },
+);
