@@ -169,6 +169,11 @@ export interface EngineContext {
   readonly policyRules?: readonly PolicyRule[];
   /** M16: operator extensions to the sensitive-path corpus. */
   readonly sensitiveGlobs?: readonly string[];
+  /**
+   * M17: execution classifier, consulted for every call before the fast
+   * path. The host wires it only in paranoid; absent everywhere else.
+   */
+  readonly executionEvidence?: (call: NormalizedToolCall) => Promise<readonly ExternalFinding[]>;
 }
 
 export interface EngineOutcome {
@@ -538,6 +543,19 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     ...mutationEvents.map((event) => event.classification),
   );
 
+  // M17: the execution classifier (paranoid-only, wired by the host). Like
+  // rules, it runs BEFORE the fast path -- `rm -rf /` is harmless to every
+  // supply-chain adapter. Its findings are external: they can only tighten.
+  let executionFindings: readonly ExternalFinding[] = [];
+  if (ctx.executionEvidence !== undefined) {
+    try {
+      executionFindings = await ctx.executionEvidence(call);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`execution classifier failed: ${message}`);
+    }
+  }
+
   // Fast path: nothing in this call can touch third-party trust, and nothing
   // changed on disk. Installing SupplyGuard must not tax ordinary development,
   // and harmless calls are not audited or sent anywhere (SPEC 5.1, 2.2).
@@ -545,6 +563,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     classification === "SUPPLY_CHAIN_IRRELEVANT" &&
     inspection.events.length === 0 &&
     ruleFindings.length === 0 &&
+    executionFindings.length === 0 &&
     mutations.length === 0 &&
     errors.length === 0
   ) {
@@ -774,6 +793,10 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
         ),
       ]);
     }
+  }
+
+  if (executionFindings.length > 0) {
+    evaluation = withExternalEvidence(evaluation, executionFindings);
   }
 
   const localDecision = evaluation.decision;

@@ -79,6 +79,8 @@ import {
 } from "./core/justification.ts";
 import { isPrivateModule, locateModuleSource } from "./analyzers/content.ts";
 import { createNpmAdapter } from "./adapters/npm/index.ts";
+import { executionCandidate } from "./generic/execution.ts";
+import type { ExternalFinding } from "./core/decisions.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
@@ -302,6 +304,10 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
   // Approval-fatigue metric (M10): prompts per session, surfaced in status.
   // More prompts mean less looking; the number exists to be watched.
   const asksBySession = new Map<string, number>();
+  // M17: one classifier per runtime, so its cache spans the session.
+  let executionClassifier:
+    | { classify(target: { command: string; file?: { path: string; text: string } }): Promise<readonly ExternalFinding[]> }
+    | undefined;
   // M12: tracked files that changed while no tool call was executing. Best
   // effort and detection-only: reconciliation on the next call remains the
   // gate; this makes the WRITE itself visible, with its timing.
@@ -456,6 +462,50 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         }
       }
       return findings;
+    };
+  }
+
+  /**
+   * M17: the execution classifier. Present ONLY when the effective profile is
+   * paranoid, `jev.enabled` is on, and a key exists (D7). Rails 1 and 3 run
+   * in `executionCandidate` before anything is sent; a refused sensitive
+   * script is said out loud, never uploaded.
+   */
+  function executionEvidenceFor(
+    project: ProjectContext,
+    profile: Profile,
+    env: Readonly<Record<string, string | undefined>>,
+    ctx: ExtensionContext,
+  ): Pick<EngineContext, "executionEvidence"> {
+    const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
+    if (profile !== "paranoid" || !project.loaded.config.jevEnabled || apiKey === undefined || apiKey === "") {
+      return {};
+    }
+    return {
+      executionEvidence: async (call) => {
+        const candidate = await executionCandidate(
+          call.input,
+          project.repoRoot,
+          project.loaded.config.sensitiveNeverSend,
+        );
+        if (candidate === undefined) return [];
+        if (candidate.refused !== undefined) {
+          notify(
+            ctx,
+            `SupplyGuard: ${candidate.refused} is a sensitive path; it was not sent to the ` +
+              `execution classifier. Decide without classifier evidence for that file.`,
+            "warning",
+          );
+        }
+        // Dynamic on purpose (human decision 2026-09-27): deleting
+        // src/providers/jev/ must leave a working product.
+        executionClassifier ??= (await import("./providers/jev/index.ts")).createExecutionClassifier({
+          enabled: true,
+          apiKey,
+          ...(options.jev ?? {}),
+        });
+        return executionClassifier.classify(candidate);
+      },
     };
   }
 
@@ -673,6 +723,12 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       trust: project.trust,
       policyRules: project.loaded.config.policyRules,
       sensitiveGlobs: project.loaded.config.sensitiveNeverSend,
+      ...executionEvidenceFor(
+        project,
+        profile,
+        (options.env ?? process.env) as Readonly<Record<string, string | undefined>>,
+        ctx,
+      ),
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),

@@ -36,13 +36,17 @@ interface JevAnswer {
   readonly p?: number;
 }
 
+const MODULE_QUESTION =
+  "Does this Go module source contain malicious, backdoor, or data-stealing " +
+  "behavior that a careful human reviewer would call out?";
+
 /**
- * One Noul question over the module's source: does this code contain
- * malicious behavior? The answer is additive evidence only.
+ * One Noul question over `state`. The answer is additive evidence only.
  */
 async function ask(
   options: JevAnalyzerOptions,
   state: string,
+  question: string = MODULE_QUESTION,
 ): Promise<{ readonly malicious: number } | { readonly error: string }> {
   const post =
     options.post ??
@@ -62,15 +66,7 @@ async function ask(
       {
         state,
         model: options.model ?? DEFAULT_MODEL,
-        questions: [
-          {
-            type: "noul",
-            id: "malicious",
-            question:
-              "Does this Go module source contain malicious, backdoor, or data-stealing " +
-              "behavior that a careful human reviewer would call out?",
-          },
-        ],
+        questions: [{ type: "noul", id: "malicious", question }],
       },
       options.apiKey ?? "",
     )) as Record<string, unknown>;
@@ -148,6 +144,100 @@ export function createJevAnalyzer(options: JevAnalyzerOptions) {
             ]
           : [];
       cache.set(key, findings);
+      return findings;
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// M17: execution classifier (paranoid-only; PLAN-LOCAL-POLICY §3).
+// Stage 1 reads the redacted COMMAND; stage 2 reads one local FILE the
+// command executes. Never a supply-chain verdict -- that is Socket's job.
+// ---------------------------------------------------------------------------
+
+const COMMAND_QUESTION =
+  "An AI coding agent is about to run this shell command. Is it harmful -- " +
+  "destructive, exfiltrating data, opening a reverse shell, disabling security, " +
+  "or running obfuscated code -- such that a careful engineer would stop it?";
+
+const FILE_QUESTION =
+  "An AI coding agent is about to execute this local script. Does it contain " +
+  "harmful behavior -- destruction, exfiltration, persistence, a reverse shell, " +
+  "or obfuscated payloads -- that a careful engineer would stop?";
+
+/** Stage 2 reads at most this much of a file; the rest is the human's to read. */
+export const FILE_CHAR_BUDGET = 120_000;
+const COMMAND_CHAR_BUDGET = 8_000;
+
+export interface ExecutionTarget {
+  /** Already redacted by the caller (rail 3). */
+  readonly command: string;
+  /** A local file the command executes, already cleared by rail 1. */
+  readonly file?: { readonly path: string; readonly text: string };
+}
+
+export function createExecutionClassifier(options: JevAnalyzerOptions) {
+  // Retry loops cost one call: keyed by exact input.
+  const cache = new Map<string, readonly ExternalFinding[]>();
+
+  async function judge(
+    label: string,
+    state: string,
+    question: string,
+  ): Promise<readonly ExternalFinding[]> {
+    const key = `${question.length}:${state}`;
+    const cached = cache.get(key);
+    if (cached !== undefined) return cached;
+
+    const result = await ask(options, state, question);
+    const findings: readonly ExternalFinding[] =
+      "error" in result
+        ? [
+            {
+              origin: "external",
+              source: "classifier",
+              code: "classifier-unavailable",
+              // D6: fail soft. Commands are not trust decisions, and offline
+              // vendored builds must survive paranoid.
+              decision: "warn",
+              message:
+                `The execution classifier could not evaluate ${label} (${result.error}); it ` +
+                `vouches for nothing. Local policy remains authoritative.`,
+            },
+          ]
+        : result.malicious >= ALERT_THRESHOLD
+          ? [
+              {
+                origin: "external",
+                source: "classifier",
+                code: "classifier:harmful",
+                // D5: ASK-capped while experimental; the human decides.
+                decision: "ask",
+                message:
+                  `The execution classifier rates ${label} harmful (p=${result.malicious.toFixed(2)}). ` +
+                  `Read it before approving.`,
+              },
+            ]
+          : []; // A benign verdict adds nothing -- it can never acquit.
+    cache.set(key, findings);
+    return findings;
+  }
+
+  return {
+    async classify(target: ExecutionTarget): Promise<readonly ExternalFinding[]> {
+      if (!options.enabled || options.apiKey === undefined || options.apiKey === "") return [];
+      const findings = [
+        ...(await judge("this command", target.command.slice(0, COMMAND_CHAR_BUDGET), COMMAND_QUESTION)),
+      ];
+      if (target.file !== undefined) {
+        findings.push(
+          ...(await judge(
+            target.file.path,
+            target.file.text.slice(0, FILE_CHAR_BUDGET),
+            FILE_QUESTION,
+          )),
+        );
+      }
       return findings;
     },
   };
