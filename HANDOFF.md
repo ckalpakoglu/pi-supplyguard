@@ -3,12 +3,11 @@
 **Last updated:** 2026-10-11
 **Branch:** `feature/local-policy-engine` (cut from `feature/zero-day-hardening`;
 `main` does not yet contain M10 onward)
-**State:** `npm run check` green — 477 tests, typecheck clean. The suite is
+**State:** `npm run check` green — 494 tests, typecheck clean. The suite is
 instrumented to make zero network calls and start zero processes;
 `test/live/` is the `LIVE=1` exception.
 
-M1–M15 are closed; M16–M18 are planned in `docs/PLAN-LOCAL-POLICY.md`. What
-v1.0 still needs is in "SPEC §25 audit" below.
+M1–M18 are closed. What v1.0 still needs is in "SPEC §25 audit" below.
 
 This file is navigation for whoever picks the project up next. It does not
 duplicate `docs/KNOWN-GAPS.md`, which is the authoritative record of what is
@@ -51,7 +50,9 @@ engine changes.
 | M13 | npm adapter: commands, lockfiles (v1–v3), lifecycle scripts | Complete |
 | M14 | Freshness: replay corpus, live contracts, homoglyphs, corpus tooling, signals | Complete |
 | M15 | Local policy rules: operator `policies:`, offline, tighten-only | Complete |
-| M16–M18 | Sensitive-data rails, paranoid execution classifier, hardening | Planned (`docs/PLAN-LOCAL-POLICY.md`) |
+| M16 | Sensitive-data rails: exfiltration denied, sensitive reads asked, never-send predicate, redaction | Complete |
+| M17 | Execution classifier: paranoid-only, ASK-capped, fail-soft, behind the rails | Complete (experimental) |
+| M18 | Adversarial corpus for rules and rails (D24/D25 closed), live classifier canary | Complete |
 
 ## Layout
 
@@ -80,6 +81,8 @@ src/generic/              rules that belong to no ecosystem, registered as an ad
 src/generic/sensitive-writes.ts  manifest and vendored-tree writes gated BEFORE they land
 src/generic/shell.ts      shell parser shared by command analysis and policy rules
 src/policy/               local policy rules: schema (rules.ts), matching (match.ts)
+src/generic/sensitive-access.ts  M16 rails: tiers, never-send predicate, redaction
+src/generic/execution.ts  M17: what may leave the machine, decided locally
 src/providers/socket/     the ONLY process SupplyGuard starts; env is allow-listed
 src/providers/jev/        optional analyzer; dynamic import, never a dependency
 src/providers/signals/    optional repository signals (GitHub API)
@@ -120,6 +123,10 @@ src/providers/signals/    optional repository signals (GitHub API)
   project rule reusing a global id could replace the operator's rule. Rules
   reuse `generic/shell.ts` and the sensitive-write shapes; do not give them a
   parser of their own.
+- **Deterministic floor, probabilistic ceiling.** The rails and the
+  classifier's targeting run locally BEFORE any provider is asked; the
+  classifier never decides whether its own guardrails apply. Its verdicts
+  are external findings: they can add an `ask`, never remove one.
 
 ## SPEC §25 audit — what v1.0 still needs
 

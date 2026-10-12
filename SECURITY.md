@@ -3,8 +3,9 @@
 ## Supported state
 
 `pi-supplyguard` is **pre-release software** (version 0.1.x). Milestones
-M1–M9, the zero-day hardening line M10–M14, and M15 (local policy rules) are
-complete. Socket Firewall is deliberately not implemented. See
+M1–M9, the zero-day hardening line M10–M14, and the local policy line
+M15–M18 (rules, sensitive-data rails, an experimental paranoid-only execution
+classifier) are complete. Socket Firewall is deliberately not implemented. See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -55,6 +56,12 @@ acknowledge reports promptly.
 - **Operator-defined actions**, via local policy rules (`policies:`): any
   command, argument, tool or path shape the operator names is warned about,
   put to a human, or denied — offline, in every profile.
+- **Credential exfiltration by shape:** a sensitive path (`.env*`, keys,
+  `~/.ssh`, `~/.aws`, …) named to or piped into a network tool is denied in
+  every profile; any other read of one asks.
+- In `paranoid` with the opt-in classifier: **harmful executions** the agent
+  attempts (destructive, reverse shells, obfuscated payloads) are put to a
+  human — experimental, ASK-capped, behind the deterministic rails.
 - Unrecognized package/network-capable commands — classified as
   `UNKNOWN_RISK` and handled conservatively (ask/ask/deny by profile).
 - Itself: internal errors block the tool call (fail closed), headless
@@ -85,6 +92,14 @@ Specific limits of the current implementation (details in
   directory is invisible to a `writePrefix` rule unless the path is on the
   command line; a flag hidden in a variable (`git push $F`) is not seen;
   symlinks are not resolved (KNOWN-GAPS §1.18).
+- **Sensitive-data rails read operands, not programs.**
+  `python3 -c "open('.env')"` and `curl -d @- < .env` are not seen by the
+  rails; a secret in a file not named as sensitive is not protected
+  (KNOWN-GAPS §1.19).
+- **The execution classifier is probabilistic and fail-soft.** It can miss
+  harm and flag benign commands; when unreachable, local policy stands. In
+  paranoid with it enabled, redacted command and script text leave the
+  machine (KNOWN-GAPS §1.20).
 - The approval prompt shows every finding — justification, release age,
   vulnerabilities, similarity, content scan, matched rules — but not the
   transitive impact SPEC §11.2 also lists.
@@ -163,7 +178,9 @@ Trust boundaries:
 | npm adapter: commands, lockfiles, lifecycle scripts | **Enforced** (M13) |
 | Incident replay corpus; live contract tests | **In CI** (M14) |
 | Local policy rules (operator-defined, offline, tighten-only) | **Enforced** (M15) |
-| Sensitive-data rails; paranoid execution classifier | Planned (M16, M17 — `docs/PLAN-LOCAL-POLICY.md`) |
+| Sensitive-data rails: exfiltration denied, sensitive reads asked | **Enforced** (M16; bypasses D24/D25 closed in M18) |
+| Execution classifier, paranoid-only, ASK-capped | **Experimental** (M17; live endpoint unproven until the `LIVE=1` canary runs) |
+| Adversarial bypass corpus for rules and rails | **In CI** (M18) |
 
 ## Supply-chain policy for this project itself
 

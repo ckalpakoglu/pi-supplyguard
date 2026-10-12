@@ -47,13 +47,14 @@ threat model is [`docs/SPEC.md` §3](docs/SPEC.md); in summary:
 ## What is enforced today
 
 **Honesty first:** this section describes the present, not the roadmap.
-Milestones M1–M9, the zero-day hardening line M10–M14, and M15 are complete —
-Pi skeleton, the Go command gate, the manifest engine, the human trust gate,
-identity protection, OSV, Socket scans, generic policies, adversarial
-hardening, local content evidence, hermetic builds and vendor quarantine,
-bypass closure, the npm adapter, freshness (replay corpus, live contract
-tests, homoglyphs, corpus tooling, optional repository signals), and local
-policy rules. Everything in
+Milestones M1–M9, the zero-day hardening line M10–M14, and the local policy
+line M15–M18 are complete — Pi skeleton, the Go command gate, the manifest
+engine, the human trust gate, identity protection, OSV, Socket scans, generic
+policies, adversarial hardening, local content evidence, hermetic builds and
+vendor quarantine, bypass closure, the npm adapter, freshness (replay corpus,
+live contract tests, homoglyphs, corpus tooling, optional repository
+signals), local policy rules, sensitive-data rails, and an experimental
+paranoid-only execution classifier. Everything in
 [`docs/SPEC.md`](docs/SPEC.md) beyond that is **not yet implemented**;
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) tracks each gap.
 
@@ -69,6 +70,19 @@ Enforced now:
   enforced offline, in every profile, before execution, through the same
   wrapper-proof parser as everything else. A rule can only tighten. See
   [Local policy rules](#local-policy-rules).
+- **Sensitive-data rails** (every profile, offline): a sensitive path —
+  `.env*`, keys and certs, `~/.ssh`, `~/.aws`, `~/.gnupg`, `.netrc`,
+  credentials — named to or piped into a network tool (`curl -d @.env`,
+  `cat .env | curl -d @- …`, `scp ~/.aws/credentials h:`) is **denied**; any
+  other read of one (`cat .env`, the read tool) **asks**; `ls ~/.ssh` and
+  `ssh -i ~/.ssh/id_rsa` stay free. Extend the corpus with
+  `sensitive.neverSend`; nothing removes the built-ins.
+- **Execution classifier** (experimental, `paranoid` + `jev.enabled` + key
+  only): a second opinion on the agent's own commands — `rm -rf`, reverse
+  shells in a local script, obfuscated payloads — that no supply-chain rule
+  sees. Read-only commands never leave the machine; command and script text
+  are redacted; sensitive scripts are never sent. A harmful verdict adds an
+  `ask`; a benign one changes nothing; an outage warns.
 - **Go command gate** (shell-aware, never a prefix match): `go get`,
   `go install`, `go mod …`, `go env`, `go work` and third-party
   `go run module@version` are recognized through wrappers and composition —
@@ -252,6 +266,9 @@ the full design matrix is [`docs/SPEC.md` §4.4](docs/SPEC.md)):
 |---|---|---|---|
 | Harmless operations (`ls`, `git status`, `gofmt`, reading files) | Allow | Allow | Allow |
 | Local policy rule match (your `policies:`) | the rule's decision | the rule's decision | the rule's decision |
+| Sensitive path named to / piped into a network tool (`curl -d @.env`) | Deny | Deny | Deny |
+| Other read of a sensitive path (`cat .env`, read tool) | Ask | Ask | Ask |
+| Execution classifier: harmful verdict (optional, `jev.enabled` + key) | — | — | Ask |
 | Unversioned / `@latest` / floating dependency or tool op | Deny | Deny | Deny |
 | Exact-version dependency add/upgrade/replace, tool install, third-party execution | Ask | Ask | Ask |
 | The same, with no recorded justification | Deny | Deny | Deny |
@@ -307,9 +324,9 @@ compiled safe minimums
 Each layer may only tighten the previous one. Supported keys today: `profile`,
 `releaseAge.minimumDays`, `audit.enabled`, `socket.enabled`
 (`off` / `auto` / `required`), `jev.enabled`, `signals.enabled` (both default
-off) and `policies` (below); unknown keys are ignored with a warning rather
-than silently accepted. Project configuration is re-read within a few seconds
-of change.
+off), `policies` and `sensitive.neverSend` (below); unknown keys are ignored
+with a warning rather than silently accepted. Project configuration is re-read
+within a few seconds of change.
 
 The optional analyzers read credentials from the environment, never from
 configuration files: `TYPESAFE_API_KEY` (or `JEV_API_KEY`) for Jev,
@@ -351,6 +368,20 @@ even under the same `id`. A malformed rule is ignored with a warning, and
 `/supplyguard-status` lists the active rules. Limits are in
 [`docs/KNOWN-GAPS.md` §1.18](docs/KNOWN-GAPS.md).
 
+### Sensitive paths
+
+The built-in corpus (`.env*`, keys, certs, `~/.ssh`, `~/.aws`, …) is always
+on. Add your own; nothing removes the built-ins:
+
+```yaml
+sensitive:
+  neverSend: ["deploy/*.json", "*.tfstate"]
+```
+
+The same list decides what the paranoid execution classifier may never
+receive ([`docs/SPEC.md` §8.6–8.7](docs/SPEC.md)). Limits are in
+[`docs/KNOWN-GAPS.md` §1.19–1.20](docs/KNOWN-GAPS.md).
+
 ## Tools and commands
 
 One LLM-callable tool:
@@ -383,7 +414,8 @@ Pi tool_call
 → ecosystem adapter (Go, npm today) → normalized supply-chain events, from the
   command AND from any manifest change nobody approved
 → project state (vendor model), once its ask-once questions are answered
-→ local policy rules: the operator's own, offline (warn / ask / deny)
+→ local policy rules and sensitive-data rails (offline, every profile)
+→ execution classifier (paranoid + opt-in only; read-only commands never sent)
 → local content scan of every artifact heading for a trust decision
 → profile baseline + findings, local and external (most restrictive wins)
 → ASK prompts the human (headless: deny)
@@ -400,7 +432,8 @@ src/core/           policy engine: events, decisions, profiles, manifest
                     snapshots, approval, justification, config, audit, state
 src/adapters/       ecosystem adapters (Go, npm) behind a registry
 src/generic/        ecosystem-agnostic policy: shell parsing, installer
-                    pipelines, sensitive writes, GitHub Actions references
+                    pipelines, sensitive writes and access rails, execution
+                    targeting, GitHub Actions references
 src/analyzers/      identity analysis and the local content scanner
 src/policy/         local policy rules: schema and matching (offline)
 src/providers/      external providers (Socket CLI, optional Jev and signals)
@@ -419,9 +452,10 @@ added as event producers/verifiers without redesigning it.
 npm run check     # typecheck (tsc --noEmit) + tests (node --test)
 ```
 
-The suite (477 tests, Node's built-in runner, no test framework dependency)
+The suite (494 tests, Node's built-in runner, no test framework dependency)
 includes Go and npm command parsing, shell wrapper/bypass cases, local policy
-rule matching and layering, semantic
+rule matching and layering, sensitive-data rails, the execution classifier
+with an injected transport, an adversarial bypass corpus, semantic
 `go.mod`/`go.sum`/lockfile diffing (both npm lockfile layouts), manifest
 snapshots and end-to-end `sed`/script reconciliation through the real runtime,
 vendor drift and quarantine, profile decision contract tables, configuration
@@ -449,9 +483,9 @@ problem.
 - [`docs/SPEC.md`](docs/SPEC.md) — canonical product and security design.
 - [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) — what is not enforced yet,
   deliberate decisions, and the defect log.
-- [`docs/PLAN-LOCAL-POLICY.md`](docs/PLAN-LOCAL-POLICY.md) — roadmap: local
-  policy rules (M15, done), sensitive-data rails (M16), paranoid-only
-  execution classifier (M17), hardening (M18).
+- [`docs/PLAN-LOCAL-POLICY.md`](docs/PLAN-LOCAL-POLICY.md) — the M15–M18
+  plan (complete): local policy rules, sensitive-data rails, paranoid-only
+  execution classifier, hardening.
 - [`docs/PLAN-ZERO-DAY.md`](docs/PLAN-ZERO-DAY.md) — the M10–M14 zero-day
   hardening plan.
 - [`SECURITY.md`](SECURITY.md) — security policy and scope.

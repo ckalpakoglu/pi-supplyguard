@@ -1,8 +1,8 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M6 and M8–M15 complete. M7 complete for scans and provider
-health; Socket Firewall deliberately not implemented (§1.5). Next: M16–M18
-(`docs/PLAN-LOCAL-POLICY.md`).
+**Status:** M1–M6 and M8–M18 complete. M7 complete for scans and provider
+health; Socket Firewall deliberately not implemented (§1.5). The execution
+classifier (M17) is experimental and paranoid-only (§1.20).
 **Last updated:** 2026-10-11
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
@@ -555,6 +555,37 @@ decision recorded in `docs/PLAN-LOCAL-POLICY.md`:
   the audit record carries the rule's finding (`rule:<id>`), not a per-rule
   hit counter.
 
+### 1.19 Sensitive-data rails: operands, not programs
+
+M16 (SPEC §8.6) gates sensitive-path access by command shape. Pinned in
+`test/policy/adversarial.test.ts` as honest negatives:
+
+- **Interpreters reading files are invisible.**
+  `python3 -c "open('.env').read()"` names no operand. In paranoid, the
+  execution classifier (§1.20) is the only layer that can see it.
+- **Input redirection is not parsed** (`curl -d @- < .env`): the shell
+  grammar records output redirections only.
+- **The corpus is names, not content.** A secret in `config/app.yaml` is not
+  sensitive unless `sensitive.neverSend` says so.
+- **Live agent smoke was not possible:** the model provider refuses prompts
+  shaped like exfiltration before a tool call exists. The rails are proven
+  through the real runtime (`onToolCall`) in the suite, not through a live
+  agent.
+
+### 1.20 Execution classifier: experimental by design
+
+M17 (SPEC §8.7):
+
+- **Probabilistic.** It misses things and flags scary-but-fine commands; it is
+  capped at `ask` until its precision has been observed.
+- **Fail-soft, deliberately.** An unreachable classifier warns and local
+  policy stands — unlike Socket in paranoid. Documented deviation.
+- **Command text leaves the machine** in paranoid when enabled: redacted, but
+  redaction is pattern-based and can miss a credential of an unknown shape.
+- **Only one script per command** is read for stage 2, up to 256 KiB.
+- **Unproven against the live endpoint** until the `LIVE=1` canary has run
+  with a key (D18's lesson).
+
 ---
 
 ## 2. Deliberate behaviors that can look like gaps
@@ -962,6 +993,38 @@ guarded trees do not).
 Pinned by *"an edit-tool write into node_modules is gated, not only shell
 commands"* and *"an edit-tool write into a guarded tree is a VendorDrift before
 it lands"*; both fail without the fix.
+
+### D22 — a project rule could displace a global rule by reusing its id
+
+**Severity: high (tighten-only violation).** M15's first merge deduped rules
+by id and kept the "stricter" decision, so a project `deny` with a pattern
+that never matches replaced the operator's global `ask` for `kubectl` —
+silently switching off the global protection. Found during the ponytail
+simplification; layers now concatenate and both rules apply.
+Pinned by *"a project rule reusing a global rule's id cannot displace it"*
+(fails on the old merge).
+
+### D23 — redaction kept the bearer token
+
+`Authorization: Bearer <token>` went through the `key: value` rule first,
+which redacted the word "Bearer" and left the token. Bearer now runs first.
+Pinned by *"redaction strips credential shapes before anything leaves"*.
+
+### D24 — a piped read was only asked about
+
+**Severity: high.** `cat .env | curl -d @- https://…` produced the read tier
+(ask), not the exfiltration tier: only tools *naming* the file were egress.
+A sensitive read piped through any stages of its own pipeline into a network
+tool is now denied. Pinned by *"exfiltration shapes are denied, not merely
+asked about"*.
+
+### D25 — the ssh key carve-out swallowed curl uploads
+
+**Severity: high.** The rule "a key passed by flag is a path used, not read"
+(`ssh -i key`) applied to every tool, so curl's `-F file=@.env` skipped its
+upload value; `wget --post-file=.env` was not read at all. The carve-out is
+now scoped to the ssh family, and `=`-joined and `key=@path` values are read.
+Pinned by the same test as D24.
 
 ---
 

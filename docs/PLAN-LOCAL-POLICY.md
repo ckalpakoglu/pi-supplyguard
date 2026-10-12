@@ -1,7 +1,8 @@
 # PLAN — Local policy: deterministic rules, sensitive-data rails, execution classifier
 
-Status: design agreed 2026-10-11. **M15 done** (`4b9cf41`, simplified in
-`4b4279a`; SPEC §8.5, KNOWN-GAPS §1.18). M16–M18 not started. This document
+Status: **complete.** M15 rules (`4b9cf41`, `4b4279a`; SPEC §8.5), M16 rails
+(`fb8a5d7`; SPEC §8.6), M17 classifier (`04badbb`; SPEC §8.7), M18 hardening
+(`889fc08`; defects D22–D25). Bounds: KNOWN-GAPS §1.18–1.20. This document
 is the roadmap. The canonical design conversation is summarized in §1; the
 milestones in §3 are the build order. Follow `docs/SPEC.md` where this plan is
 ambiguous, and amend SPEC (not this file) when a milestone lands.

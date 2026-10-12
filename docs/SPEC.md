@@ -460,6 +460,57 @@ Composition follows the §8.2 lattice:
 A headless `ask` from a rule fails closed like every other `ask`, so delegated
 workers inherit the operator's rules with no way past them.
 
+## 8.6 Sensitive-Data Rails
+
+Added by M16. Built in, every profile, offline; operators extend the corpus,
+never shrink it:
+
+```yaml
+sensitive:
+  neverSend: ["deploy/*.json", "*.tfstate"]   # unioned across layers
+```
+
+**Rail 2 — access tiers**, decided by command shape (`SensitiveAccess`):
+
+| Shape | Every profile |
+|---|---|
+| A sensitive path named to, or piped into, a network tool (`curl -d @.env`, `curl -F f=@.env`, `wget --post-file=.env`, `scp ~/.aws/credentials h:`, `cat .env \| base64 \| curl -d @- …`) | Deny |
+| Any other tool reading one (`cat .env`, the read tool, `tar ~/.gnupg`) | Ask |
+| Metadata only (`ls ~/.ssh`, name-only file tools) | Allow |
+
+A key passed by flag to the ssh family (`ssh -i ~/.ssh/id_rsa`) is a path
+used, not read; the same flag on `curl` (`-F`) is an upload.
+
+**Rail 1 — never-send predicate.** One function (`isSensitivePath`) decides
+what may never leave the machine for every sender: `.env*`, keys and certs,
+`.netrc`/`.npmrc`, `credentials`, `*secret*`/`*credential*`, tfvars/tfstate,
+and `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.gcloud`. A
+human approval authorizes an *execution*, never an *upload*.
+
+**Rail 3 — redaction.** Bearer tokens, `key=value` secrets, `sk-` keys and
+long hex runs are stripped from anything a provider receives.
+
+## 8.7 Execution Classifier (Experimental, Paranoid Only)
+
+Added by M17. A probabilistic second opinion on the agent's own
+*executions* — `rm -rf`, reverse shells in a local script, obfuscated
+payloads — which no supply-chain adapter considers. It is not a dependency
+verdict; malicious artifacts remain Socket's (§13).
+
+- Present only when the effective profile is `paranoid`, `jev.enabled` is
+  on, and `TYPESAFE_API_KEY`/`JEV_API_KEY` is set. Below paranoid the code
+  path does not load.
+- Consulted for shell commands before the harmless fast path, except
+  commands made only of read-only tools (`ls`, `cat`, `git status`, …),
+  which never leave the machine (§5.1).
+- Stage 1 reads the redacted command; stage 2 reads the one local script it
+  executes, unless rail 1 marks it sensitive — then nothing of it is sent
+  and the human is told.
+- Verdicts: harmful (p ≥ 0.7) → `ask`, capped while experimental; benign →
+  nothing, it never acquits; unavailable → `warn`, local policy stands
+  (deliberate deviation from §13.4's fail-closed: commands are not trust
+  decisions, and offline vendored builds must survive paranoid).
+
 ---
 
 # 9. Go Adapter — Project and Vendor Model
