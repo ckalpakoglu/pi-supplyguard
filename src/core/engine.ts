@@ -86,6 +86,8 @@ import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/regist
 export type ExternalEvidenceProvider = (
   events: readonly SupplyChainEvent[],
   ctx: EngineContext,
+  /** The call under evaluation: the classifier's stage 1 reads its command. */
+  call?: NormalizedToolCall,
 ) => Promise<readonly ExternalFinding[]>;
 
 /**
@@ -165,6 +167,8 @@ export interface EngineContext {
    * folded as findings by most-restrictive. Absent = none declared.
    */
   readonly policyRules?: readonly PolicyRule[];
+  /** M16: operator extensions to the sensitive-path corpus. */
+  readonly sensitiveGlobs?: readonly string[];
 }
 
 export interface EngineOutcome {
@@ -482,6 +486,9 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     profile: ctx.profile,
     watchedPaths: watched,
     ...(writePrefixes.length === 0 ? {} : { writeGuardPrefixes: writePrefixes }),
+    ...(ctx.sensitiveGlobs === undefined || ctx.sensitiveGlobs.length === 0
+      ? {}
+      : { sensitiveGlobs: ctx.sensitiveGlobs }),
   };
   const manifestSnapshot =
     watched.length === 0 ? EMPTY_SNAPSHOT : await readManifestSnapshot(ctx.repoRoot, watched);
@@ -753,7 +760,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   // External intelligence is additive and can only tighten (SPEC 13.5).
   if (ctx.externalEvidence !== undefined && events.length > 0) {
     try {
-      const external = await ctx.externalEvidence(events, ctx);
+      const external = await ctx.externalEvidence(events, ctx, call);
       evaluation = withExternalEvidence(evaluation, external);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

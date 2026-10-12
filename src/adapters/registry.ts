@@ -35,6 +35,8 @@ export interface AdapterContext {
   readonly watchedPaths: readonly string[];
   /** Directory prefixes whose contents are write-guarded but not snapshotted. */
   readonly writeGuardPrefixes?: readonly string[];
+  /** Operator extensions to the sensitive-path corpus (`sensitive.neverSend`). */
+  readonly sensitiveGlobs?: readonly string[];
 }
 
 /**

@@ -106,6 +106,9 @@ export const EVENT_BASELINE = {
   NetworkRequirement: { standard: "allow", hardened: "ask", paranoid: "deny" },
   RegistryAccess: { standard: "allow", hardened: "warn", paranoid: "ask" },
   DependencyFetch: { standard: "allow", hardened: "warn", paranoid: "ask" },
+  // M16: reading sensitive paths asks in every profile; the egress-coupled
+  // tier carries its own deny floor on the event.
+  SensitiveAccess: { standard: "ask", hardened: "ask", paranoid: "ask" },
 } as const satisfies Record<SupplyChainEventClass, ProfileDecisionRow>;
 
 /**

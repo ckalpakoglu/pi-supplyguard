@@ -672,6 +672,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
       trust: project.trust,
       policyRules: project.loaded.config.policyRules,
+      sensitiveGlobs: project.loaded.config.sensitiveNeverSend,
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),

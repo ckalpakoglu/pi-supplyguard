@@ -117,6 +117,7 @@ test("profile x event decision contract table", () => {
     NetworkRequirement: ["allow", "ask", "deny"],
     RegistryAccess: ["allow", "warn", "ask"],
     DependencyFetch: ["allow", "warn", "ask"],
+    SensitiveAccess: ["ask", "ask", "ask"],
   };
 
   assert.equal(

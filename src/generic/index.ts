@@ -30,7 +30,15 @@ import {
   inspectInstallers,
   inspectNetworkFetches,
 } from "./installers.ts";
-import { inspectNonShellWrite, inspectSensitiveWrites } from "./sensitive-writes.ts";
+import {
+  pathLikeInputValues,
+  inspectNonShellWrite,
+  inspectSensitiveWrites,
+} from "./sensitive-writes.ts";
+import {
+  sensitiveAccessFromCommands,
+  sensitiveAccessFromPaths,
+} from "./sensitive-access.ts";
 import { parseShell } from "./shell.ts";
 
 /**
@@ -50,19 +58,24 @@ export function createGenericAdapter(): EcosystemAdapter {
     sensitivePaths: () => WORKFLOW_GLOBS,
 
     inspectToolCall(call: NormalizedToolCall, ctx: AdapterContext): AdapterToolCallResult {
-       const command = shellCommand(call);
-       if (command === undefined) {
+      const command = shellCommand(call);
+      const extra = ctx.sensitiveGlobs ?? [];
+      if (command === undefined) {
         const toolWrites = inspectNonShellWrite(
           call.toolName,
           call.input,
           ctx.watchedPaths,
           ctx.writeGuardPrefixes ?? [],
         );
-        if (toolWrites.length === 0) {
+        const sensitive = sensitiveAccessFromPaths(call.toolName, pathLikeInputValues(call.input), extra);
+        if (toolWrites.length === 0 && sensitive.length === 0) {
           return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
         }
-        return { classification: "THIRD_PARTY_MUTATION", events: toolWrites };
-       }
+        return {
+          classification: "THIRD_PARTY_MUTATION",
+          events: [...toolWrites, ...sensitive],
+        };
+      }
 
       const parsed = parseShell(command);
       const pipelines = inspectInstallers(parsed.commands);
@@ -79,6 +92,7 @@ export function createGenericAdapter(): EcosystemAdapter {
         ...pipelines,
         ...writes,
         ...correlated,
+        ...sensitiveAccessFromCommands(parsed.commands, extra),
         ...inspectNetworkFetches(parsed.commands, pipelines.length),
       ];
       if (events.length === 0) {

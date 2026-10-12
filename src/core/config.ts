@@ -113,6 +113,7 @@ export interface SupplyGuardConfig {
   readonly signalsEnabled: boolean;
   /** M15: local policy rules, global layer unioned with the project layer. */
   readonly policyRules: readonly PolicyRule[];
+  readonly sensitiveNeverSend: readonly string[];
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -127,6 +128,7 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   jevEnabled: false,
   signalsEnabled: false,
   policyRules: Object.freeze([] as readonly PolicyRule[]),
+  sensitiveNeverSend: Object.freeze([] as readonly string[]),
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -138,6 +140,7 @@ export interface ConfigLayer {
   readonly jevEnabled?: boolean;
   readonly signalsEnabled?: boolean;
   readonly policyRules?: readonly PolicyRule[];
+  readonly sensitiveNeverSend?: readonly string[];
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -264,6 +267,8 @@ export function tightenConfig(
       signalsEnabled,
       // A union: a later layer adds rules, it can never remove or replace one.
       policyRules: [...base.policyRules, ...(layer.policyRules ?? [])],
+      // Same lattice: the corpus only ever grows.
+      sensitiveNeverSend: [...base.sensitiveNeverSend, ...(layer.sensitiveNeverSend ?? [])],
     },
     warnings,
   };
@@ -299,6 +304,7 @@ export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): 
     jevEnabled?: boolean;
     signalsEnabled?: boolean;
     policyRules?: readonly PolicyRule[];
+    sensitiveNeverSend?: readonly string[];
   } = {};
 
   if ("profile" in doc) {
@@ -372,6 +378,16 @@ export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): 
 
   const policies = parsePolicyRules(doc["policies"], source);
   warnings.push(...policies.warnings);
+
+  const sensitive = doc["sensitive"];
+  if (sensitive !== undefined) {
+    const list = readStringList(sensitive, "neverSend");
+    if (list === undefined) {
+      warnings.push(`invalid "sensitive.neverSend" value; ignored.`);
+    } else if (list.length > 0) {
+      layer.sensitiveNeverSend = list;
+    }
+  }
   if (policies.rules.length > 0) layer.policyRules = policies.rules;
 
   const known = new Set([
@@ -382,7 +398,7 @@ export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): 
     "socket",
     "jev",
     "signals",
-    "policies",
+    "sensitive",
   ]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
@@ -391,6 +407,14 @@ export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): 
   }
 
   return { layer, warnings };
+}
+
+function readStringList(container: unknown, key: string): readonly string[] | undefined {
+  if (typeof container !== "object" || container === null) return undefined;
+  const value = (container as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+  return items.length === 0 ? undefined : items;
 }
 
 function readNumber(container: unknown, key: string): number | undefined {
