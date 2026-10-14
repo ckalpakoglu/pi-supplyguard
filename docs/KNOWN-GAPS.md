@@ -567,8 +567,11 @@ M16 (SPEC §8.6) gates sensitive-path access by command shape. Pinned in
   grammar records output redirections only.
 - **The corpus is names, not content.** A secret in `config/app.yaml` is not
   sensitive unless `sensitive.neverSend` says so.
-- **Live agent smoke was not possible:** the model provider refuses prompts
-  shaped like exfiltration before a tool call exists. The rails are proven
+- **Live agent smoke (2026-10-14, omp headless):** the ask tier held —
+  `cat .env.local` was gated, the agent reported the gate without
+  bypassing, the file content never entered the model's context, and
+  `ls -la` ran untouched. Prompts shaped like exfiltration are refused by
+  the model provider before a tool call exists, so the DENY tier is proven
   through the real runtime (`onToolCall`) in the suite, not through a live
   agent.
 
