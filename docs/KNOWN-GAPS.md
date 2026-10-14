@@ -1026,6 +1026,18 @@ upload value; `wget --post-file=.env` was not read at all. The carve-out is
 now scoped to the ssh family, and `=`-joined and `key=@path` values are read.
 Pinned by the same test as D24.
 
+### D26 — repository signals were silently inert without Jev
+
+**Severity: medium (an enabled control doing nothing).** The signals block
+sat behind the Jev early returns in `externalEvidenceFor`, so
+`signals.enabled: true` consulted the provider only when `jev.enabled` was
+also on AND a key existed. An operator who turned signals on without Jev
+got no signals, no warning, no audit line. Found during the M16–M18 wrap-up
+review; signals are now gated by their own flag alone, and the runtime grew
+a signals transport seam so the path is testable hermetically.
+Pinned by *"signals.enabled works with Jev off and no key (D26)"* (fails on
+the old wiring: the provider is never consulted).
+
 ---
 
 ## 4. Release readiness

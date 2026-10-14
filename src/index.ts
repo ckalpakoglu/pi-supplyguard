@@ -137,6 +137,8 @@ export interface RuntimeOptions {
     /** Test seam: an injected transport. Nothing in the suite reaches the network. */
     readonly post?: (url: string, body: unknown, apiKey: string) => Promise<unknown>;
   };
+  /** Test seam for repository signals; same no-network rule. */
+  readonly signals?: { readonly fetch?: (url: string, headers: Record<string, string>) => Promise<unknown> };
 }
 
 export interface SupplyGuardRuntime {
@@ -427,35 +429,41 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     return async (events: Parameters<NonNullable<EngineContext["externalEvidence"]>>[0], ctx: EngineContext) => {
       const findings = [];
       if (socket !== undefined) findings.push(...(await socket(events, ctx)));
-      if (!jevConfigured) return findings;
-      const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
-      if (apiKey === undefined || apiKey === "") return findings;
-
-      // Dynamic on purpose: deleting src/providers/jev/ must leave a working
-      // product (KNOWN-GAPS 1.15); a static import would defeat that.
-      const { createJevAnalyzer } = await import("./providers/jev/index.ts");
-      const analyzer = createJevAnalyzer({ enabled: true, apiKey, ...(options.jev ?? {}) });
-      const targets = new Map<string, { artifact: string; version: string }>();
-      for (const event of events) {
-        if (!needsJustification(event)) continue;
-        if (event.artifact === undefined || event.version === undefined) continue;
-        targets.set(`${event.artifact}@${event.version}`, {
-          artifact: event.artifact,
-          version: event.version,
-        });
-      }
-      for (const { artifact, version } of targets.values()) {
-        if (isPrivateModule(artifact, env)) continue; // goes nowhere, ever
-        const located = await locateModuleSource(project.repoRoot, artifact, version, env);
-        if (located === undefined) continue; // local scanner already said so
-        findings.push(...(await analyzer.evidenceFor({ artifact, version, source: located.root })));
+      // Trust-decision targets, shared by the optional analyzers below.
+      const targets = new Map<string, { readonly artifact: string; readonly version: string }>();
+      if (jevConfigured || project.loaded.config.signalsEnabled) {
+        for (const event of events) {
+          if (!needsJustification(event)) continue;
+          if (event.artifact === undefined || event.version === undefined) continue;
+          targets.set(`${event.artifact}@${event.version}`, {
+            artifact: event.artifact,
+            version: event.version,
+          });
+        }
       }
 
-      // M14 repository signals: opt-in, advisory, additive-only.
+      if (jevConfigured) {
+        const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
+        if (apiKey !== undefined && apiKey !== "") {
+          // Dynamic on purpose: deleting src/providers/jev/ must leave a working
+          // product (KNOWN-GAPS 1.15); a static import would defeat that.
+          const { createJevAnalyzer } = await import("./providers/jev/index.ts");
+          const analyzer = createJevAnalyzer({ enabled: true, apiKey, ...(options.jev ?? {}) });
+          for (const { artifact, version } of targets.values()) {
+            if (isPrivateModule(artifact, env)) continue; // goes nowhere, ever
+            const located = await locateModuleSource(project.repoRoot, artifact, version, env);
+            if (located === undefined) continue; // local scanner already said so
+            findings.push(...(await analyzer.evidenceFor({ artifact, version, source: located.root })));
+          }
+        }
+      }
+
+      // M14 repository signals: gated by its own flag and nothing else (D26).
       if (project.loaded.config.signalsEnabled) {
         const { createRepoSignalsProvider } = await import("./providers/signals/index.ts");
         const provider = createRepoSignalsProvider({
           ...(typeof env.GITHUB_TOKEN === "string" ? { token: env.GITHUB_TOKEN } : {}),
+          ...(options.signals ?? {}),
         });
         for (const { artifact, version } of targets.values()) {
           findings.push(...(await provider.evidenceFor(artifact, version)));
