@@ -811,6 +811,13 @@ If no trust corpus exists:
 
 # 13. Socket.dev Integration
 
+
+> **Scope decision, 2026-10-14:** Socket Firewall (protected fetch, §13.9)
+> and the Socket manifest/project scan are **out of scope** and not planned.
+> §13.3, the protected-fetch clauses of §13.4 and §13.9 remain as design
+> history only. What ships: CLI artifact scoring and provider health,
+> additive-only, required in paranoid (§13.5).
+
 Socket is an external security provider, not a replacement for local SupplyGuard checks.
 
 ## 13.1 Provider Abstraction
@@ -1329,12 +1336,18 @@ v1.0 is complete when:
 - Release cooldown and scoped override behavior work per profile.
 - Trust corpus enables component-aware typo/repository-squatting analysis.
 - Mutable GitHub Actions and installer pipelines are enforced.
-- Hardened asks once whether to enable Socket Firewall, remembers the choice, and audits it.
-- Paranoid requires Socket artifact + manifest evaluation and protected fetch for new third-party trust decisions.
+- Paranoid requires Socket artifact evaluation for new third-party trust decisions.
 - Paranoid fails closed on Socket outage/unscanned artifacts for new trust decisions while allowing unchanged vendored offline builds.
 - All security decisions and overrides are auditable.
 - Chief and spawned workers receive identical global enforcement.
 - The core remains ecosystem-independent so npm/Python adapters can be added without policy-engine redesign.
+
+**Scope decision, 2026-10-14:** Socket Firewall and the Socket manifest scan
+are **out of scope for v1.0** and not planned. §13.3, the protected-fetch
+clauses of §13.4 and all of §13.9 describe a capability that will not ship;
+they are retained as design history, not as commitments. The enforced
+contract is: Socket artifact scoring + health, additive-only, required in
+paranoid (§13.5).
 
 ---
 

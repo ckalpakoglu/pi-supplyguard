@@ -5,7 +5,8 @@
 `pi-supplyguard` is **pre-release software** (version 0.1.x). Milestones
 M1–M9, the zero-day hardening line M10–M14, and the local policy line
 M15–M18 (rules, sensitive-data rails, an experimental paranoid-only execution
-classifier) are complete. Socket Firewall is deliberately not implemented. See
+classifier) are complete. Socket Firewall and the manifest scan are out of
+scope by decision (2026-10-14). See
 [Current enforcement status](#current-enforcement-status) below and
 [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md) for the full honesty contract.
 
@@ -117,7 +118,8 @@ Specific limits of the current implementation (details in
   per-process cache; an advisory with no stated severity is treated as
   unresolved rather than assigned one.
 - Socket integration is the CLI only: artifact scoring and provider health, no
-  Firewall and no manifest scan, so Paranoid does not meet SPEC §13.4 in full.
+  Firewall and no manifest scan — both out of scope by decision (2026-10-14),
+  so this is no longer a SPEC §13.4 shortfall.
   `socket package score` also requires a Socket API token, without which every
   scan is "unavailable" — a warning below Paranoid and a denial in it.
 - Mutable action references already committed are reported, not gated; only
@@ -168,7 +170,7 @@ Trust boundaries:
 | Typosquatting / reposquatting against a trust corpus | **Enforced** (M5; Unicode lookalikes M14) |
 | Vulnerability metadata (OSV), per severity and profile | **Enforced** (M6) |
 | Socket artifact scans and provider health, via the CLI | **Enforced** (M7) |
-| Socket Firewall (protected fetch), Socket manifest scan | Deliberately not implemented |
+| Socket Firewall (protected fetch), Socket manifest scan | Out of scope by decision (2026-10-14) |
 | `curl \| sh` / `wget \| sh` denial, in every profile | **Enforced** (M8; split download→execute M12) |
 | GitHub Actions full-SHA pinning; `docker://` digests; network events | **Enforced** (M8, M12) |
 | Writes gated before they land (manifests, `vendor/`, `node_modules/`) | **Enforced** (M9; file tools since D21) |

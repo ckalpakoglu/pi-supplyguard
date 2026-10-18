@@ -1,9 +1,10 @@
 # Known Gaps and Defect Log
 
 **Status:** M1–M6 and M8–M18 complete. M7 complete for scans and provider
-health; Socket Firewall deliberately not implemented (§1.5). The execution
-classifier (M17) is experimental and paranoid-only (§1.20).
-**Last updated:** 2026-10-11
+health; Socket Firewall and manifest scan out of scope by decision
+(§1.5, 2026-10-14). The execution classifier (M17) is experimental and
+paranoid-only (§1.20).
+**Last updated:** 2026-10-14
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
 a security control that overstates its coverage is worse than none: it converts
@@ -166,6 +167,13 @@ are structural rather than temporary:
   mixed-script detection (an identifier mixing scripts is itself a signal).
 
 ### 1.5 Socket is the CLI only: no Firewall, and no manifest scan
+
+
+**Scope decision, 2026-10-14 (supersedes the 2026-09-02 framing below):**
+Socket Firewall and the manifest scan are OUT OF SCOPE and not planned.
+SPEC §25's v1.0 criteria and §13 were amended the same day, so Firewall is
+no longer "mandatory for Paranoid" anywhere. The text below is kept as the
+honest description of what the Socket CLI integration does not do.
 
 Human decision, 2026-09-02: M7 integrates the **Socket CLI**
 (`socket package score`), not Socket Firewall. What that leaves undone is

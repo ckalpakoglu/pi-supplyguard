@@ -128,12 +128,13 @@ src/providers/signals/    optional repository signals (GitHub API)
   classifier never decides whether its own guardrails apply. Its verdicts
   are external findings: they can add an `ask`, never remove one.
 
-## SPEC §25 audit — what v1.0 still needs
+## SPEC §25 audit — v1.0 status
 
-The original roadmap (M1–M9) and the hardening lines are finished; the v1.0
-success criteria are not, and the gap is one
-subsystem rather than a long tail. Fourteen of the seventeen criteria hold and
-have tests:
+All fifteen v1.0 success criteria hold and have tests. The two former
+shortfalls were Socket Firewall criteria removed by the scope decision of
+2026-10-14 (SPEC §25, KNOWN-GAPS §1.5): Firewall and the manifest scan are
+out of scope and not planned. The amended "Paranoid requires Socket
+artifact evaluation" criterion is met.
 
 | Criterion | State |
 |---|---|
@@ -148,19 +149,11 @@ have tests:
 | Release cooldown and scoped override behavior per profile | Met |
 | Trust corpus enables component-aware typo/repository-squatting analysis | Met |
 | Mutable GitHub Actions and installer pipelines enforced | Met |
+| Paranoid requires Socket artifact evaluation for new trust decisions | Met |
 | Paranoid fails closed on provider outage, vendored offline builds still work | Met |
 | All security decisions and overrides auditable | Met |
 | Chief and spawned workers receive identical enforcement | Met |
 | The core remains ecosystem-independent | Met |
-| **Hardened asks once whether to enable Socket Firewall** | **Not met** |
-| **Paranoid requires Socket manifest evaluation and protected fetch** | **Partly** — artifact scanning only |
-
-All three shortfalls are the same decision: M7 integrates the Socket CLI, not
-Socket Firewall (`docs/KNOWN-GAPS.md` §1.5). Closing them means a protected
-fetch path — proxy, registry or wrapper, capability-detected per SPEC §13.9 —
-plus `socket scan create` for the manifest scan, plus the ask-once Hardened
-prompt, for which the machinery already exists and is in service for the vendor
-question.
 
 Two other things stand between the current tree and a release:
 

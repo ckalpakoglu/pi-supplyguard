@@ -5,8 +5,8 @@ build and CI supply-chain trust decisions explicit, independently checked,
 reviewable, and enforceable before execution.
 
 > **Status: in development.** Go and npm are feature-complete and tested, but
-> this is pre-release software: Python/Cargo adapters, Socket Firewall and
-> publication are not done, behavior may change without notice, and it has had
+> this is pre-release software: Python/Cargo adapters and publication are not
+> done, behavior may change without notice, and it has had
 > one primary user and reviewer. Read [`docs/KNOWN-GAPS.md`](docs/KNOWN-GAPS.md)
 > before relying on it, and pin a commit if you do.
 
@@ -198,8 +198,9 @@ Enforced now:
   high one asks below `paranoid` and denies in it. Socket is *additive* — a
   clean result can never rescue a dependency the local checks refused
   (SPEC §13.5). `paranoid` requires a working Socket and denies without one;
-  `hardened` warns and carries on. Socket **Firewall** is not implemented
-  (KNOWN-GAPS §1.5); `socket package score` needs a Socket API token.
+  `hardened` warns and carries on. Socket **Firewall** and the manifest scan
+  are out of scope by decision, 2026-10-14 (KNOWN-GAPS §1.5);
+  `socket package score` needs a Socket API token.
 - **Fail closed:** internal SupplyGuard errors block the call rather than
   passing it through; a headless `ASK` is denied. A tracked file that changes
   while no tool call is executing, or a tool call that runs with input
@@ -210,7 +211,7 @@ Enforced now:
   profile, session, repository, branch, event and decision. Secrets and raw
   environment dumps are never recorded.
 
-Not yet implemented: Socket Firewall and the Socket manifest scan, Python and
+Not yet implemented: Python and
 Cargo adapters, release-age/OSV/content evidence for npm artifacts (their
 evidence today is lifecycle scripts and lockfile metadata), brokering a
 delegated worker's `ASK` up to the Chief UI, and *preventing* a hostile
