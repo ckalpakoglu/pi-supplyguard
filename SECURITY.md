@@ -100,10 +100,13 @@ Specific limits of the current implementation (details in
 - **The execution classifier is probabilistic and fail-soft.** It can miss
   harm and flag benign commands; when unreachable, local policy stands. In
   paranoid with it enabled, redacted command and script text leave the
-  machine (KNOWN-GAPS §1.20).
+  machine. It reads the one script a command runs, never what that script
+  imports — a script that hides its behavior that way is put to a human as
+  "cannot be judged", not read (KNOWN-GAPS §1.20).
 - The approval prompt shows every finding — justification, release age,
-  vulnerabilities, similarity, content scan, matched rules — but not the
-  transitive impact SPEC §11.2 also lists.
+  vulnerabilities, similarity, content scan, matched rules — and, for a
+  command that runs a local script, the script itself (redacted). It does
+  not show the transitive impact SPEC §11.2 also lists.
 - **Outbound requests:** the Go module proxy (release dates), OSV
   (advisories), the Socket CLI when installed, and the opt-in Jev and
   repository-signal providers. `GOPRIVATE`, `GONOPROXY` and `GOPROXY=off` are

@@ -505,7 +505,16 @@ verdict; malicious artifacts remain Socket's (§13).
   which never leave the machine (§5.1).
 - Stage 1 reads the redacted command; stage 2 reads the one local script it
   executes, unless rail 1 marks it sensitive — then nothing of it is sent
-  and the human is told.
+  and the human is told. Stage 2 asks two questions in one request: is the
+  script harmful, and can its safety be judged from its text alone? A
+  script that hides its behavior — local imports, dynamic loading,
+  obfuscation — answers the second, and is put to a human instead of
+  passing as "not harmful".
+- **Every profile:** when a command that executes a local script reaches an
+  approval or override prompt, the screen shows the script (first 40
+  lines, rail-3 redacted; a rail-1 path is named, never shown). The excerpt
+  is screen-only: it is not a finding, so it never enters the audit log or
+  the agent's block reason.
 - Verdicts: harmful (p ≥ 0.7) → `ask`, capped while experimental; benign →
   nothing, it never acquits; unavailable → `warn`, local policy stands
   (deliberate deviation from §13.4's fail-closed: commands are not trust

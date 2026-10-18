@@ -93,3 +93,34 @@ export async function executionCandidate(
   }
   return { command };
 }
+
+/** The approval screen shows at most this much of a script; the file is the rest. */
+const EXCERPT_LINES = 40;
+const EXCERPT_LINE_CHARS = 200;
+
+/**
+ * The local script a call executes, as approval-screen lines. Same targeting,
+ * redaction (rail 3) and refusal (rail 1) as the classifier: what the human
+ * is shown is never more than what may be shown. Empty when no script runs.
+ */
+export async function scriptExcerptLines(
+  input: Readonly<Record<string, unknown>>,
+  repoRoot: string,
+  sensitiveGlobs: readonly string[] = [],
+): Promise<readonly string[]> {
+  const candidate = await executionCandidate(input, repoRoot, sensitiveGlobs);
+  if (candidate?.refused !== undefined) {
+    return [`Script ${candidate.refused}: a sensitive path — its content is not shown.`];
+  }
+  if (candidate?.file === undefined) return [];
+
+  const lines = candidate.file.text.replace(/\n$/, "").split("\n");
+  const shown = lines
+    .slice(0, EXCERPT_LINES)
+    .map((line) => `  | ${line.length > EXCERPT_LINE_CHARS ? `${line.slice(0, EXCERPT_LINE_CHARS)}…` : line}`);
+  return [
+    `Script ${candidate.file.path} (what this command runs; secrets redacted):`,
+    ...shown,
+    ...(lines.length > EXCERPT_LINES ? [`  … ${lines.length - EXCERPT_LINES} more line(s) in the file`] : []),
+  ];
+}

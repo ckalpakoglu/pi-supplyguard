@@ -593,17 +593,27 @@ M17 (SPEC §8.7):
   policy stands — unlike Socket in paranoid. Documented deviation.
 - **Command text leaves the machine** in paranoid when enabled: redacted, but
   redaction is pattern-based and can miss a credential of an unknown shape.
-- **Only one script per command** is read for stage 2, up to 256 KiB.
+- **One script per command is READ; what it pulls in is not.** Stage 2 sends
+  the executed script only (up to 256 KiB). A reverse shell moved one
+  `import` away passed until 2026-10-18; since then the same request asks
+  whether the script's safety can be judged from its text at all, and local
+  imports, dynamic loading and obfuscation answer "no" (p=0.86–0.94 live) —
+  a human review, not a pass. The imported code itself is still never read,
+  and in paranoid every script with local imports now asks: deliberate
+  review cost, not a defect.
 - **Live-proven (2026-10-18), after D27.** The `LIVE=1` canary is green, and
-  five real-world cases (supplyguard-lab `p7-jev-classifier`) went 5/5
-  across two runs: a benign build proceeded; `rm -rf`, a `/dev/tcp` reverse
-  shell, a base64-decoded `curl | bash` and a trojan script were each gated
-  at p=0.98–0.99. Five cases is a smoke test, not a precision measurement —
-  the ASK cap stays.
+  nine real-world cases (supplyguard-lab `p7-jev-classifier`) went 9/9
+  across two runs: a benign build and a stdlib-only script proceeded;
+  `rm -rf`, a `/dev/tcp` reverse shell, a base64-decoded `curl | bash`, a
+  trojan script, a payload behind a local import, an `importlib` loader and
+  an `exec(b64decode)` script were each gated. Nine cases is a smoke test,
+  not a precision measurement — the ASK cap stays.
 - **Without it, paranoid does not see these shapes.** The p7 control run (no
-  key) let all five through: no rule, rail or baseline covers destruction,
-  reverse shells, decoded payloads or exfiltration of non-corpus files. The
-  classifier is the only layer for that class, and it is opt-in.
+  key) let all nine through: no rule, rail or baseline covers destruction,
+  reverse shells, decoded payloads, hidden imports or exfiltration of
+  non-corpus files. The classifier is the only layer for that class, and it
+  is opt-in. The approval screen does show the script in every profile, so
+  a human answering a rule's `ask` reads the code either way.
 
 ---
 

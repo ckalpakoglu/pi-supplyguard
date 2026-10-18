@@ -82,7 +82,14 @@ Enforced now:
   shells in a local script, obfuscated payloads — that no supply-chain rule
   sees. Read-only commands never leave the machine; command and script text
   are redacted; sensitive scripts are never sent. A harmful verdict adds an
-  `ask`; a benign one changes nothing; an outage warns.
+  `ask`; so does a script whose safety cannot be judged from its own text
+  (local imports, dynamic loading, obfuscation); a benign one changes
+  nothing; an outage warns.
+- **The script on the approval screen** (every profile): when a command that
+  runs a local script (`python run.py`, `bash deploy.sh`, `./x`) reaches a
+  prompt, the human sees the script itself — first 40 lines, secrets
+  redacted, sensitive paths named but never shown. Screen-only: never in the
+  audit log or the agent's block reason.
 - **Go command gate** (shell-aware, never a prefix match): `go get`,
   `go install`, `go mod …`, `go env`, `go work` and third-party
   `go run module@version` are recognized through wrappers and composition —

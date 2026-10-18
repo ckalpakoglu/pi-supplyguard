@@ -79,7 +79,7 @@ import {
 } from "./core/justification.ts";
 import { isPrivateModule, locateModuleSource } from "./analyzers/content.ts";
 import { createNpmAdapter } from "./adapters/npm/index.ts";
-import { executionCandidate } from "./generic/execution.ts";
+import { executionCandidate, scriptExcerptLines } from "./generic/execution.ts";
 import type { ExternalFinding } from "./core/decisions.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
@@ -731,6 +731,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       trust: project.trust,
       policyRules: project.loaded.config.policyRules,
       sensitiveGlobs: project.loaded.config.sensitiveNeverSend,
+      // Every profile: the human sees what a command's script will run.
+      scriptExcerpt: (call) =>
+        scriptExcerptLines(call.input, project.repoRoot, project.loaded.config.sensitiveNeverSend),
       ...executionEvidenceFor(
         project,
         profile,

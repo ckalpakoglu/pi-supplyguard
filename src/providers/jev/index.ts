@@ -41,13 +41,15 @@ const MODULE_QUESTION =
   "behavior that a careful human reviewer would call out?";
 
 /**
- * One Noul question over `state`. The answer is additive evidence only.
+ * Noul questions over `state`, all in ONE request; answers keyed by the same
+ * ids. Additive evidence only. Any question left unanswered makes the whole
+ * reply unusable: a partial verdict must not read as a clean one.
  */
 async function ask(
   options: JevAnalyzerOptions,
   state: string,
-  question: string = MODULE_QUESTION,
-): Promise<{ readonly malicious: number } | { readonly error: string }> {
+  questions: Readonly<Record<string, string>>,
+): Promise<{ readonly answers: Readonly<Record<string, number>> } | { readonly error: string }> {
   const post =
     options.post ??
     (async (url: string, body: unknown, apiKey: string) => {
@@ -61,7 +63,7 @@ async function ask(
     });
 
   try {
-    const document = (await post(
+    const document = await post(
       `${options.baseUrl ?? DEFAULT_BASE_URL}/v1/systemone`,
       {
         state,
@@ -69,24 +71,35 @@ async function ask(
         // Live-verified 2026-10-18 (D27): questions is a DICT keyed by id,
         // each { type: "noul", instructions }; the answer comes back as
         // answers.<id>.noul.
-        questions: { malicious: { type: "noul", instructions: question } },
+        questions: Object.fromEntries(
+          Object.entries(questions).map(([id, instructions]) => [id, { type: "noul", instructions }]),
+        ),
       },
       options.apiKey ?? "",
-    )) as Record<string, unknown>;
-
-    const answers = document["answers"];
-    const answer =
-      typeof answers === "object" && answers !== null && !Array.isArray(answers)
-        ? (answers as Record<string, unknown>)["malicious"]
+    );
+    const answers =
+      typeof document === "object" && document !== null && "answers" in document
+        ? document.answers
         : undefined;
-    if (typeof answer !== "object" || answer === null) {
-      return { error: "the analyzer returned no answer for the question" };
+    if (typeof answers !== "object" || answers === null || Array.isArray(answers)) {
+      return { error: "the analyzer returned no answers" };
     }
-    const noul = (answer as Record<string, unknown>)["noul"];
-    if ((answer as Record<string, unknown>)["type"] !== "noul" || typeof noul !== "number" || !Number.isFinite(noul)) {
-      return { error: "the analyzer returned an unusable answer" };
+
+    const byId = new Map(Object.entries(answers));
+    const result: Record<string, number> = {};
+    for (const id of Object.keys(questions)) {
+      const answer: unknown = byId.get(id);
+      const noul =
+        typeof answer === "object" && answer !== null && "type" in answer && answer.type === "noul" &&
+        "noul" in answer
+          ? answer.noul
+          : undefined;
+      if (typeof noul !== "number" || !Number.isFinite(noul)) {
+        return { error: `the analyzer returned no usable answer for "${id}"` };
+      }
+      result[id] = noul;
     }
-    return { malicious: noul };
+    return { answers: result };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -117,7 +130,7 @@ export function createJevAnalyzer(options: JevAnalyzerOptions) {
       }
       if (state.trim() === "") return [];
 
-      const result = await ask(options, state.slice(0, STATE_CHAR_BUDGET));
+      const result = await ask(options, state.slice(0, STATE_CHAR_BUDGET), { malicious: MODULE_QUESTION });
       if ("error" in result) {
         const findings: readonly ExternalFinding[] = [
           {
@@ -134,8 +147,9 @@ export function createJevAnalyzer(options: JevAnalyzerOptions) {
         return findings;
       }
 
+      const malicious = result.answers["malicious"] ?? 0;
       const findings =
-        result.malicious >= ALERT_THRESHOLD
+        malicious >= ALERT_THRESHOLD
           ? [
               {
                 origin: "external" as const,
@@ -144,8 +158,8 @@ export function createJevAnalyzer(options: JevAnalyzerOptions) {
                 // Experimental cap: the human decides; nothing auto-denies.
                 decision: "ask" as const,
                 message:
-                  `Jev rates ${key} malicious with p=${result.malicious.toFixed(2)} ` +
-                  `(confidence ${(2 * Math.abs(result.malicious - 0.5)).toFixed(2)}). ` +
+                  `Jev rates ${key} malicious with p=${malicious.toFixed(2)} ` +
+                  `(confidence ${(2 * Math.abs(malicious - 0.5)).toFixed(2)}). ` +
                   `Read the flagged code before approving.`,
               },
             ]
@@ -159,7 +173,9 @@ export function createJevAnalyzer(options: JevAnalyzerOptions) {
 // ---------------------------------------------------------------------------
 // M17: execution classifier (paranoid-only; PLAN-LOCAL-POLICY §3).
 // Stage 1 reads the redacted COMMAND; stage 2 reads one local FILE the
-// command executes. Never a supply-chain verdict -- that is Socket's job.
+// command executes and asks two questions in one request: is it harmful,
+// and can its safety be judged from its own text at all.
+// Never a supply-chain verdict -- that is Socket's job.
 // ---------------------------------------------------------------------------
 
 const COMMAND_QUESTION =
@@ -171,6 +187,31 @@ const FILE_QUESTION =
   "An AI coding agent is about to execute this local script. Does it contain " +
   "harmful behavior -- destruction, exfiltration, persistence, a reverse shell, " +
   "or obfuscated payloads -- that a careful engineer would stop?";
+
+/**
+ * Stage 2 reads ONE file. A script whose behavior lives elsewhere -- local
+ * imports, dynamic loading, encoded payloads -- looks clean to the harm
+ * question; this question turns "cannot see it" into a human review instead
+ * of a pass. Live-calibrated 2026-10-18: stdlib and well-known third-party
+ * imports stay below the threshold (0.05–0.08).
+ */
+const OPACITY_QUESTION =
+  "An AI coding agent is about to execute this local script. Can its safety NOT " +
+  "be judged from this text alone -- because it imports modules from the local " +
+  "project (not the standard library or well-known third-party packages), loads " +
+  "or executes code dynamically (exec, eval, importlib, __import__, require of a " +
+  "computed path, downloaded code), or is obfuscated or encoded -- so that a human " +
+  "should review what it pulls in before it runs?";
+
+/** What each question's high-confidence answer means for the human. */
+const VERDICTS: Record<string, (label: string, p: number) => string> = {
+  malicious: (label, p) =>
+    `The execution classifier rates ${label} harmful (p=${p.toFixed(2)}). Read it before approving.`,
+  opaque: (label, p) =>
+    `The execution classifier cannot judge ${label} from its text alone (p=${p.toFixed(2)}): it ` +
+    `imports local modules, loads code dynamically, or is obfuscated. Review the script — and ` +
+    `what it pulls in — before approving.`,
+};
 
 /** Stage 2 reads at most this much of a file; the rest is the human's to read. */
 export const FILE_CHAR_BUDGET = 120_000;
@@ -190,13 +231,13 @@ export function createExecutionClassifier(options: JevAnalyzerOptions) {
   async function judge(
     label: string,
     state: string,
-    question: string,
+    questions: Readonly<Record<string, string>>,
   ): Promise<readonly ExternalFinding[]> {
-    const key = `${question.length}:${state}`;
+    const key = `${Object.keys(questions).join(",")}:${state}`;
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
-    const result = await ask(options, state, question);
+    const result = await ask(options, state, questions);
     const findings: readonly ExternalFinding[] =
       "error" in result
         ? [
@@ -212,20 +253,21 @@ export function createExecutionClassifier(options: JevAnalyzerOptions) {
                 `vouches for nothing. Local policy remains authoritative.`,
             },
           ]
-        : result.malicious >= ALERT_THRESHOLD
-          ? [
-              {
-                origin: "external",
-                source: "classifier",
-                code: "classifier:harmful",
-                // D5: ASK-capped while experimental; the human decides.
-                decision: "ask",
-                message:
-                  `The execution classifier rates ${label} harmful (p=${result.malicious.toFixed(2)}). ` +
-                  `Read it before approving.`,
-              },
-            ]
-          : []; // A benign verdict adds nothing -- it can never acquit.
+        : Object.entries(result.answers).flatMap(([id, p]) =>
+            // A low answer adds nothing -- the classifier can never acquit.
+            p >= ALERT_THRESHOLD && VERDICTS[id] !== undefined
+              ? [
+                  {
+                    origin: "external" as const,
+                    source: "classifier",
+                    code: id === "malicious" ? "classifier:harmful" : `classifier:${id}`,
+                    // D5: ASK-capped while experimental; the human decides.
+                    decision: "ask" as const,
+                    message: VERDICTS[id](label, p),
+                  },
+                ]
+              : [],
+          );
     cache.set(key, findings);
     return findings;
   }
@@ -234,15 +276,16 @@ export function createExecutionClassifier(options: JevAnalyzerOptions) {
     async classify(target: ExecutionTarget): Promise<readonly ExternalFinding[]> {
       if (!options.enabled || options.apiKey === undefined || options.apiKey === "") return [];
       const findings = [
-        ...(await judge("this command", target.command.slice(0, COMMAND_CHAR_BUDGET), COMMAND_QUESTION)),
+        ...(await judge("this command", target.command.slice(0, COMMAND_CHAR_BUDGET), {
+          malicious: COMMAND_QUESTION,
+        })),
       ];
       if (target.file !== undefined) {
         findings.push(
-          ...(await judge(
-            target.file.path,
-            target.file.text.slice(0, FILE_CHAR_BUDGET),
-            FILE_QUESTION,
-          )),
+          ...(await judge(target.file.path, target.file.text.slice(0, FILE_CHAR_BUDGET), {
+            malicious: FILE_QUESTION,
+            opaque: OPACITY_QUESTION,
+          })),
         );
       }
       return findings;

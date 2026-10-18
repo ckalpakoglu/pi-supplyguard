@@ -174,6 +174,11 @@ export interface EngineContext {
    * path. The host wires it only in paranoid; absent everywhere else.
    */
   readonly executionEvidence?: (call: NormalizedToolCall) => Promise<readonly ExternalFinding[]>;
+  /**
+   * Lines describing the local script a call executes, for the approval
+   * screen only. Host-supplied, every profile; absent means nothing shown.
+   */
+  readonly scriptExcerpt?: (call: NormalizedToolCall) => Promise<readonly string[]>;
 }
 
 export interface EngineOutcome {
@@ -802,11 +807,21 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   const localDecision = evaluation.decision;
   let approval: EngineOutcome["approval"];
 
+  // The script this call executes, shown to the human on any prompt. Never
+  // a finding: findings reach the audit log and the agent's block reason.
+  // A read failure costs the excerpt, never the gate.
+  const scriptLines =
+    ctx.hasUI &&
+    ctx.scriptExcerpt !== undefined &&
+    (localDecision === "ask" || isOverridable(evaluation))
+      ? await ctx.scriptExcerpt(call).catch((): readonly string[] => [])
+      : [];
+
   if (localDecision === "ask") {
     const result = await requestHumanApproval(
       {
         title: "SupplyGuard — approval required",
-        lines: approvalLines(call, events, evaluation, justified.used),
+        lines: [...approvalLines(call, events, evaluation, justified.used), ...scriptLines],
         profile: ctx.profile,
       },
       ctx.ui,
@@ -828,7 +843,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     const result = await requestHumanOverride(
       {
         title: "SupplyGuard — override this denial once?",
-        lines: approvalLines(call, events, evaluation, justified.used),
+        lines: [...approvalLines(call, events, evaluation, justified.used), ...scriptLines],
         profile: ctx.profile,
         reasonRequired: overrideNeedsReason(evaluation, REASON_REQUIRED_CODES),
       },
