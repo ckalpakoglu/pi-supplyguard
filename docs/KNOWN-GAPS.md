@@ -1049,6 +1049,22 @@ a signals transport seam so the path is testable hermetically.
 Pinned by *"signals.enabled works with Jev off and no key (D26)"* (fails on
 the old wiring: the provider is never consulted).
 
+### D27 — the Jev transport had never talked to the real API, and both shapes were wrong
+
+**Severity: high (fail-closed, not a bypass).** First live contact with
+`api.typesafe.ai/v1/systemone` (2026-10-18, via the M18 canary with a real
+key) returned HTTP 422: the API takes `questions` as a **dict** keyed by
+id with `{ type: "noul", instructions }`, not the array-of-`question`
+shape the provider sent — and it answers `answers.<id>.noul`, a shape the
+response parser rejected as unusable. Every Jev test injected its
+transport, so both defects were invisible until the canary ran: with a key
+present, Jev contributed nothing but "unavailable" warnings, and paranoid's
+dependency verdicts degraded to warn-only. Fixed to the live-verified
+contract; all injected fixtures now simulate the real response shape.
+Pinned by *"the execution classifier endpoint answers a real verdict"*
+(`LIVE=1`) and the hermetic *"a high-confidence malicious verdict
+contributes at most an ASK"* (request-shape assertions).
+
 ---
 
 ## 4. Release readiness

@@ -34,7 +34,7 @@ test("a high-confidence malicious verdict contributes at most an ASK", async () 
     apiKey: "test-key",
     post: async (_url, body, key) => {
       seen.push({ body, key });
-      return { answers: [{ type: "noul", id: "malicious", p: 0.93 }] };
+      return { answers: { malicious: { type: "noul", noul: 0.93 } } };
     },
   });
   const findings = await analyzer.evidenceFor({
@@ -51,8 +51,11 @@ test("a high-confidence malicious verdict contributes at most an ASK", async () 
   const first = seen[0] as { body: Record<string, unknown>; key: string };
   assert.equal(first.key, "test-key");
   assert.equal((first.body as { model?: string }).model, "jev-latest");
-  const questions = (first.body as { questions?: { type: string }[] }).questions ?? [];
-  assert.equal(questions[0]?.type, "noul");
+  // The request shape is the live-verified contract (D27, 2026-10-18).
+  const questions =
+    (first.body as { questions?: Record<string, { type?: string; instructions?: string }> }).questions ?? {};
+  assert.equal(questions["malicious"]?.type, "noul");
+  assert.match(questions["malicious"]?.instructions ?? "", /malicious/);
   assert.match(String((first.body as { state?: string }).state), /package pkg/);
 });
 
@@ -63,7 +66,7 @@ test("a low probability means no finding, and the verdict is cached", async () =
     apiKey: "k",
     post: async () => {
       calls += 1;
-      return { answers: [{ type: "noul", id: "malicious", p: 0.11 }] };
+      return { answers: { malicious: { type: "noul", noul: 0.11 } } };
     },
   });
   const source = await moduleDir();

@@ -104,7 +104,7 @@ test("jev.enabled + key: the analyzer is consulted and its finding reaches the p
     env: { TYPESAFE_API_KEY: "test-key" },
     post: async (url, body, apiKey) => {
       calls.push({ url, body, apiKey });
-      return { answers: [{ type: "noul", id: "malicious", p: 0.95 }] };
+      return { answers: { malicious: { type: "noul", noul: 0.95 } } };
     },
   });
 
@@ -128,7 +128,7 @@ test("every off spelling stays silent", async () => {
   const calls: { url: string }[] = [];
   const post = async (url: string) => {
     calls.push({ url });
-    return { answers: [{ type: "noul", id: "malicious", p: 0.95 }] };
+    return { answers: { malicious: { type: "noul", noul: 0.95 } } };
   };
 
   // Config off, key present.
@@ -148,7 +148,7 @@ test("JEV_API_KEY is honored as a fallback spelling", async () => {
     env: { JEV_API_KEY: "legacy-key" },
     post: async (_url, _body, apiKey) => {
       keys.push(apiKey);
-      return { answers: [{ type: "noul", id: "malicious", p: 0.1 }] };
+      return { answers: { malicious: { type: "noul", noul: 0.1 } } };
     },
   });
   await h.call("go get github.com/evil/pkg@v0.0.1");

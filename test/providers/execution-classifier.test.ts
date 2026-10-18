@@ -41,7 +41,7 @@ async function harness(options: { profile?: string; verdict?: (state: string) =>
         sent.push(state);
         const p = verdict(state);
         if (p === "error") throw new Error("HTTP 503");
-        return { answers: [{ type: "noul", id: "malicious", p }] };
+        return { answers: { malicious: { type: "noul", noul: p } } };
       },
     },
   });

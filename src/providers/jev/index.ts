@@ -66,20 +66,27 @@ async function ask(
       {
         state,
         model: options.model ?? DEFAULT_MODEL,
-        questions: [{ type: "noul", id: "malicious", question }],
+        // Live-verified 2026-10-18 (D27): questions is a DICT keyed by id,
+        // each { type: "noul", instructions }; the answer comes back as
+        // answers.<id>.noul.
+        questions: { malicious: { type: "noul", instructions: question } },
       },
       options.apiKey ?? "",
     )) as Record<string, unknown>;
 
     const answers = document["answers"];
-    if (!Array.isArray(answers) || answers.length === 0) {
-      return { error: "the analyzer returned no answers" };
+    const answer =
+      typeof answers === "object" && answers !== null && !Array.isArray(answers)
+        ? (answers as Record<string, unknown>)["malicious"]
+        : undefined;
+    if (typeof answer !== "object" || answer === null) {
+      return { error: "the analyzer returned no answer for the question" };
     }
-    const answer = answers[0] as JevAnswer;
-    if (answer.type !== "noul" || typeof answer.p !== "number" || !Number.isFinite(answer.p)) {
+    const noul = (answer as Record<string, unknown>)["noul"];
+    if ((answer as Record<string, unknown>)["type"] !== "noul" || typeof noul !== "number" || !Number.isFinite(noul)) {
       return { error: "the analyzer returned an unusable answer" };
     }
-    return { malicious: answer.p };
+    return { malicious: noul };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
