@@ -104,6 +104,8 @@ export interface GoProject {
   readonly vendorState: VendorState;
   /** Non-secret explanations of a `stale` vendor state; empty otherwise. */
   readonly driftReasons: readonly string[];
+  /** The vendored tree's modules, from `vendor/modules.txt`. */
+  readonly vendoredModules: readonly VendoredModule[];
 }
 
 export const NO_GO_PROJECT: GoProject = Object.freeze({
@@ -114,6 +116,7 @@ export const NO_GO_PROJECT: GoProject = Object.freeze({
   hasVendorTree: false,
   vendorState: "absent",
   driftReasons: Object.freeze([]) as readonly string[],
+  vendoredModules: Object.freeze([]) as readonly VendoredModule[],
 });
 
 /**
@@ -195,6 +198,7 @@ export async function detectGoProject(repoRoot: string): Promise<GoProject> {
     hasVendorTree && hasGoMod
       ? vendorDrift(parseGoMod(goModText), parseVendorModules(vendorText))
       : [];
+  const vendoredModules = hasVendorTree ? parseVendorModules(vendorText) : [];
 
   return {
     isGoProject: true,
@@ -204,5 +208,6 @@ export async function detectGoProject(repoRoot: string): Promise<GoProject> {
     hasVendorTree,
     vendorState: !hasVendorTree ? "absent" : driftReasons.length > 0 ? "stale" : "current",
     driftReasons,
+    vendoredModules,
   };
 }

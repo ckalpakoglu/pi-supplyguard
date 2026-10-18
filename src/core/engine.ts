@@ -61,6 +61,8 @@ import {
   readManifestSnapshot,
   type ManifestSnapshot,
 } from "./manifest.ts";
+import { matchPolicyRules } from "../policy/match.ts";
+import type { PolicyRule } from "../policy/rules.ts";
 import {
   describeJustification,
   JUSTIFY_TOOL,
@@ -84,6 +86,8 @@ import type { AdapterRegistry, ProjectDecisionRequest } from "../adapters/regist
 export type ExternalEvidenceProvider = (
   events: readonly SupplyChainEvent[],
   ctx: EngineContext,
+  /** The call under evaluation: the classifier's stage 1 reads its command. */
+  call?: NormalizedToolCall,
 ) => Promise<readonly ExternalFinding[]>;
 
 /**
@@ -158,6 +162,18 @@ export interface EngineContext {
    * ownership would produce confident nonsense.
    */
   readonly trust?: TrustCorpus;
+  /**
+   * Local policy rules (M15): operator-authored match -> decision rules,
+   * folded as findings by most-restrictive. Absent = none declared.
+   */
+  readonly policyRules?: readonly PolicyRule[];
+  /** M16: operator extensions to the sensitive-path corpus. */
+  readonly sensitiveGlobs?: readonly string[];
+  /**
+   * M17: execution classifier, consulted for every call before the fast
+   * path. The host wires it only in paranoid; absent everywhere else.
+   */
+  readonly executionEvidence?: (call: NormalizedToolCall) => Promise<readonly ExternalFinding[]>;
 }
 
 export interface EngineOutcome {
@@ -362,11 +378,26 @@ function collectJustifications(
   const used = new Map<string, Justification>();
   if (store === undefined) return { findings, used };
 
+  // One justification per artifact@version, consumed once, covering every
+  // event for that pair: `npm install evil` is one decision that surfaces as
+  // a DependencyAdd AND a lifecycle-script ThirdPartyExecution, and a go.sum
+  // move can echo a module the command gate already named. Double-consuming
+  // would turn the second event into an unjustified denial.
+  const byKey = new Map<string, { readonly artifact: string; readonly version: string; readonly events: SupplyChainEvent[] }>();
   for (const event of events) {
     if (!needsJustification(event)) continue;
     const artifact = event.artifact ?? "";
     const version = event.version ?? "";
+    const key = `${artifact}@${version}`;
+    const entry = byKey.get(key);
+    if (entry === undefined) {
+      byKey.set(key, { artifact, version, events: [event] });
+    } else {
+      entry.events.push(event);
+    }
+  }
 
+  for (const { artifact, version, events: keyEvents } of byKey.values()) {
     const justification = store.take(artifact, version);
     if (justification === undefined) {
       findings.push(
@@ -383,7 +414,7 @@ function collectJustifications(
       continue;
     }
 
-    used.set(describeEvent(event), justification);
+    for (const event of keyEvents) used.set(describeEvent(event), justification);
     findings.push(
       localFinding(
         "justification",
@@ -460,6 +491,9 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     profile: ctx.profile,
     watchedPaths: watched,
     ...(writePrefixes.length === 0 ? {} : { writeGuardPrefixes: writePrefixes }),
+    ...(ctx.sensitiveGlobs === undefined || ctx.sensitiveGlobs.length === 0
+      ? {}
+      : { sensitiveGlobs: ctx.sensitiveGlobs }),
   };
   const manifestSnapshot =
     watched.length === 0 ? EMPTY_SNAPSHOT : await readManifestSnapshot(ctx.repoRoot, watched);
@@ -492,10 +526,35 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
     }
   }
 
+  // M15: local policy rules, matched BEFORE the harmless fast path -- a rule
+  // exists to gate calls no adapter finds interesting.
+  const ruleFindings = matchPolicyRules(call, ctx.policyRules ?? [], ctx.repoRoot).map((rule) =>
+    localFinding(
+      "policy",
+      `rule:${rule.id}`,
+      rule.decision,
+      `Local policy rule "${rule.id}" (${rule.source}) matched this call.` +
+        (rule.reason === undefined ? "" : ` ${rule.reason}`),
+    ),
+  );
+
   const classification = mostSevereClassification(
     inspection.classification,
     ...mutationEvents.map((event) => event.classification),
   );
+
+  // M17: the execution classifier (paranoid-only, wired by the host). Like
+  // rules, it runs BEFORE the fast path -- `rm -rf /` is harmless to every
+  // supply-chain adapter. Its findings are external: they can only tighten.
+  let executionFindings: readonly ExternalFinding[] = [];
+  if (ctx.executionEvidence !== undefined) {
+    try {
+      executionFindings = await ctx.executionEvidence(call);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`execution classifier failed: ${message}`);
+    }
+  }
 
   // Fast path: nothing in this call can touch third-party trust, and nothing
   // changed on disk. Installing SupplyGuard must not tax ordinary development,
@@ -503,6 +562,8 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   if (
     classification === "SUPPLY_CHAIN_IRRELEVANT" &&
     inspection.events.length === 0 &&
+    ruleFindings.length === 0 &&
+    executionFindings.length === 0 &&
     mutations.length === 0 &&
     errors.length === 0
   ) {
@@ -547,8 +608,75 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   errors.push(...projectState.errors);
   notes.push(...projectState.notes);
 
-  const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events];
+  // Zero-day classes are answered by no database; the only honest local
+  // answer is "what does this code actually do", read from the artifact's own
+  // source. Findings become ArtifactAnomaly events so the human is shown code;
+  // a source that cannot be located locally becomes a banner (ask) or, in
+  // paranoid, a denial: uninspected third-party content must not execute.
+  const contentEvents: SupplyChainEvent[] = [];
+  const uninspected: LocalFinding[] = [];
+  const scanned = new Set<string>();
+  const trustTargets = new Map<string, { readonly artifact: string; readonly version: string }>();
+  for (const event of [...callEvents, ...projectState.events]) {
+    if (!needsJustification(event)) continue;
+    const artifact = event.artifact ?? "";
+    const version = event.version ?? "";
+    if (artifact === "" || version === "") continue;
+    trustTargets.set(`${artifact}@${version}`, { artifact, version });
+    // go.sum carries its moved modules as a detail string (M10 semantics).
+    const modules = event.detail?.["modules"];
+    if (event.eventClass === "LockfileMutation" && typeof modules === "string") {
+      for (const spec of modules.split(" ")) {
+        const at = spec.lastIndexOf("@");
+        if (at <= 0) continue;
+        trustTargets.set(spec, { artifact: spec.slice(0, at), version: spec.slice(at + 1) });
+      }
+    }
+  }
+  for (const { artifact, version } of trustTargets.values()) {
+    const key = `${artifact}@${version}`;
+    if (scanned.has(key)) continue;
+    scanned.add(key);
 
+    let scan;
+    try {
+      scan = await ctx.registry.resolveContentScan(artifact, version, adapterCtx);
+    } catch {
+      scan = { scanned: false as const, reason: "the content scanner failed" };
+    }
+    if (scan === undefined) continue; // no adapter has an opinion
+
+    if (!scan.scanned) {
+      uninspected.push(
+        localFinding(
+          "content",
+          "content-uninspected",
+          "ask",
+          `${artifact}@${version}: source not locally resolvable yet (${scan.reason}); the ` +
+            `dependency's CONTENT has not been inspected. It will be scanned from the ` +
+            `vendor tree or module cache after it is fetched; approving now means trusting ` +
+            `an unread module, and in paranoid the build stays gated until the scan runs.`,
+        ),
+      );
+      continue;
+    }
+
+    if (scan.findings.length > 0) {
+      notes.push(`content scan (${scan.source}) of ${key}: ${scan.findings.length} finding(s)`);
+    }
+    for (const finding of scan.findings) {
+      contentEvents.push({
+        eventClass: "ArtifactAnomaly",
+        ecosystem: "generic",
+        classification: "THIRD_PARTY_MUTATION",
+        artifact,
+        version,
+        summary: `${key}: ${finding.message} (${finding.file}:${finding.line})`,
+        detail: { rule: finding.rule, file: finding.file, line: finding.line },
+      });
+    }
+  }
+  const events: readonly SupplyChainEvent[] = [...callEvents, ...projectState.events, ...contentEvents];
 
   const justified = collectJustifications(events, ctx.justifications);
 
@@ -625,7 +753,9 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
 
   let evaluation = evaluateLocal([
     ...baselineFindings(classification, events, ctx.profile),
+    ...ruleFindings,
     ...justified.findings,
+    ...uninspected,
     ...cooldown,
     ...vulnerabilities,
     ...identityFindings(events, ctx.trust, ctx.profile),
@@ -649,7 +779,7 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
   // External intelligence is additive and can only tighten (SPEC 13.5).
   if (ctx.externalEvidence !== undefined && events.length > 0) {
     try {
-      const external = await ctx.externalEvidence(events, ctx);
+      const external = await ctx.externalEvidence(events, ctx, call);
       evaluation = withExternalEvidence(evaluation, external);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -663,6 +793,10 @@ async function run(call: NormalizedToolCall, ctx: EngineContext): Promise<Engine
         ),
       ]);
     }
+  }
+
+  if (executionFindings.length > 0) {
+    evaluation = withExternalEvidence(evaluation, executionFindings);
   }
 
   const localDecision = evaluation.decision;

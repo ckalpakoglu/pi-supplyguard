@@ -30,7 +30,7 @@
     ]
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.ts'",
+    "test": "node --test --test-concurrency=4 'test/**/*.test.ts'",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check": "npm run typecheck && npm test"
   },

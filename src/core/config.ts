@@ -20,6 +20,7 @@ import { isAbsolute, join } from "node:path";
 
 import { DEFAULT_PROFILE, maxProfile, parseProfile, type Profile } from "./profiles.ts";
 import { isEmptyDocument, parseYaml } from "./yaml.ts";
+import { parsePolicyRules, type PolicyRule, type RuleSource } from "../policy/rules.ts";
 
 /** SPEC 8.1 -- canonical configuration and state paths. */
 export interface SupplyGuardPaths {
@@ -106,6 +107,13 @@ export interface SupplyGuardConfig {
   readonly releaseAgeMinimumDays: number;
   readonly auditEnabled: boolean;
   readonly socket: SocketMode;
+  /** M10: optional experimental analyzer; the local scanner needs nothing. */
+  readonly jevEnabled: boolean;
+  /** M14: optional repository-signal provider (class C). Default off. */
+  readonly signalsEnabled: boolean;
+  /** M15: local policy rules, global layer unioned with the project layer. */
+  readonly policyRules: readonly PolicyRule[];
+  readonly sensitiveNeverSend: readonly string[];
 }
 
 /** SPEC 8.2 -- the compiled safe minimums; the floor of every other layer. */
@@ -117,6 +125,10 @@ export const COMPILED_SAFE_MINIMUMS: SupplyGuardConfig = Object.freeze({
   // SPEC 4.4: Socket scans are optional and off by default in standard. `auto`
   // means "use it if it is there", which costs an absent operator nothing.
   socket: "auto",
+  jevEnabled: false,
+  signalsEnabled: false,
+  policyRules: Object.freeze([] as readonly PolicyRule[]),
+  sensitiveNeverSend: Object.freeze([] as readonly string[]),
 });
 
 /** A partial configuration layer parsed from a file. */
@@ -125,6 +137,10 @@ export interface ConfigLayer {
   readonly releaseAgeMinimumDays?: number;
   readonly auditEnabled?: boolean;
   readonly socket?: SocketMode;
+  readonly jevEnabled?: boolean;
+  readonly signalsEnabled?: boolean;
+  readonly policyRules?: readonly PolicyRule[];
+  readonly sensitiveNeverSend?: readonly string[];
 }
 
 export const CONFIG_SOURCE_KINDS = ["compiled", "global", "project"] as const;
@@ -218,8 +234,42 @@ export function tightenConfig(
     }
   }
 
+  let signalsEnabled = base.signalsEnabled;
+  if (layer.signalsEnabled !== undefined) {
+    signalsEnabled = base.signalsEnabled || layer.signalsEnabled;
+    if (signalsEnabled !== layer.signalsEnabled) {
+      warnings.push(
+        `${layerName} requested signals.enabled=false, which is weaker than the established ` +
+          `baseline signals.enabled=true; ignored.`,
+      );
+    }
+  }
+
+  let jevEnabled = base.jevEnabled;
+  if (layer.jevEnabled !== undefined) {
+    jevEnabled = base.jevEnabled || layer.jevEnabled;
+    if (jevEnabled !== layer.jevEnabled) {
+      warnings.push(
+        `${layerName} requested jev.enabled=false, which is weaker than the established ` +
+          `baseline jev.enabled=true; ignored.`,
+      );
+    }
+  }
+
   return {
-    config: { version: 1, profile, releaseAgeMinimumDays, auditEnabled, socket },
+    config: {
+      version: 1,
+      profile,
+      releaseAgeMinimumDays,
+      auditEnabled,
+      socket,
+      jevEnabled,
+      signalsEnabled,
+      // A union: a later layer adds rules, it can never remove or replace one.
+      policyRules: [...base.policyRules, ...(layer.policyRules ?? [])],
+      // Same lattice: the corpus only ever grows.
+      sensitiveNeverSend: [...base.sensitiveNeverSend, ...(layer.sensitiveNeverSend ?? [])],
+    },
     warnings,
   };
 }
@@ -236,7 +286,7 @@ export interface ParsedLayer {
  * swallowing `socket:` today and honouring it after an upgrade would change
  * enforcement without review. Malformed values are ignored, never guessed.
  */
-export function parseConfigLayer(raw: unknown): ParsedLayer {
+export function parseConfigLayer(raw: unknown, source: RuleSource = "project"): ParsedLayer {
   const warnings: string[] = [];
 
   if (isEmptyDocument(raw)) return { layer: {}, warnings };
@@ -251,6 +301,10 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     releaseAgeMinimumDays?: number;
     auditEnabled?: boolean;
     socket?: SocketMode;
+    jevEnabled?: boolean;
+    signalsEnabled?: boolean;
+    policyRules?: readonly PolicyRule[];
+    sensitiveNeverSend?: readonly string[];
   } = {};
 
   if ("profile" in doc) {
@@ -296,7 +350,56 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
     }
   }
 
-  const known = new Set(["version", "profile", "releaseAge", "audit", "socket"]);
+  const jev = doc["jev"];
+  if (jev !== undefined) {
+    const enabled =
+      typeof jev === "object" && jev !== null && !Array.isArray(jev)
+        ? readBoolean(jev, "enabled")
+        : undefined;
+    if (enabled === undefined) {
+      warnings.push(`invalid "jev.enabled" value; ignored.`);
+    } else {
+      layer.jevEnabled = enabled;
+    }
+  }
+
+  const jevSignals = doc["signals"];
+  if (jevSignals !== undefined) {
+    const enabled =
+      typeof jevSignals === "object" && jevSignals !== null && !Array.isArray(jevSignals)
+        ? readBoolean(jevSignals, "enabled")
+        : undefined;
+    if (enabled === undefined) {
+      warnings.push(`invalid "signals.enabled" value; ignored.`);
+    } else {
+      layer.signalsEnabled = enabled;
+    }
+  }
+
+  const policies = parsePolicyRules(doc["policies"], source);
+  warnings.push(...policies.warnings);
+
+  const sensitive = doc["sensitive"];
+  if (sensitive !== undefined) {
+    const list = readStringList(sensitive, "neverSend");
+    if (list === undefined) {
+      warnings.push(`invalid "sensitive.neverSend" value; ignored.`);
+    } else if (list.length > 0) {
+      layer.sensitiveNeverSend = list;
+    }
+  }
+  if (policies.rules.length > 0) layer.policyRules = policies.rules;
+
+  const known = new Set([
+    "version",
+    "profile",
+    "releaseAge",
+    "audit",
+    "socket",
+    "jev",
+    "signals",
+    "sensitive",
+  ]);
   for (const key of Object.keys(doc)) {
     if (!known.has(key)) {
       warnings.push(`unsupported configuration key "${key}"; ignored in this version.`);
@@ -304,6 +407,14 @@ export function parseConfigLayer(raw: unknown): ParsedLayer {
   }
 
   return { layer, warnings };
+}
+
+function readStringList(container: unknown, key: string): readonly string[] | undefined {
+  if (typeof container !== "object" || container === null) return undefined;
+  const value = (container as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) return undefined;
+  const items = value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+  return items.length === 0 ? undefined : items;
 }
 
 function readNumber(container: unknown, key: string): number | undefined {
@@ -357,7 +468,7 @@ async function loadLayerFile(kind: ConfigSourceKind, path: string): Promise<File
     };
   }
 
-  const interpreted = parseConfigLayer(parsed.value);
+  const interpreted = parseConfigLayer(parsed.value, kind === "global" ? "global" : "project");
   return {
     source: { kind, path, status: "applied", notes: interpreted.warnings },
     layer: interpreted.layer,

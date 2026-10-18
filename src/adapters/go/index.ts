@@ -46,9 +46,12 @@ import {
   GO_MOD,
   GO_SENSITIVE_PATHS,
   GO_SUM,
+  GO_WORK,
+  GO_WORK_SUM,
   VENDOR_MODULES,
   VENDOR_PREFIX,
 } from "./project.ts";
+import { isPrivateModule, locateModuleSource, scanModuleSource } from "../../analyzers/content.ts";
 import { lookupVulnerabilities, type OsvOptions } from "./osv.ts";
 import { lookupReleaseDate, type ProxyOptions } from "./proxy.ts";
 import type { ReleaseLookup } from "../../core/release-age.ts";
@@ -56,7 +59,6 @@ import type { VulnerabilityLookup } from "../../core/vulnerability.ts";
 
 /**
  * Pull the shell command out of a tool call.
- *
  * Keyed on the shape of the input rather than on a hard-coded tool name: Pi's
  * bash tool passes `command`, and keying on the field means a renamed or
  * additional command-shaped tool is still inspected. A tool call without one
@@ -222,17 +224,44 @@ function goSumEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
   }
 
   const diff = diffGoSum(parseGoSum(mutation.before ?? ""), parseGoSum(mutation.after ?? ""));
-  if (diff.added.length === 0 && diff.removed.length === 0) return [];
+  const removedByPath = new Map(
+    diff.removed.filter((e) => !e.goModHash).map((e) => [e.path, e.version]),
+  );
+  const moves: string[] = [];
+  const scannable: { readonly artifact: string; readonly version: string }[] = [];
+  const seen = new Set<string>();
+  for (const entry of diff.added) {
+    if (entry.goModHash) continue;
+    const key = `${entry.path}@${entry.version}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const from = removedByPath.get(entry.path);
+    moves.push(
+      from === undefined
+        ? `${entry.path} ${entry.version}`
+        : `${entry.path} ${from}→${entry.version}`,
+    );
+    scannable.push({ artifact: entry.path, version: entry.version });
+  }
+  const shown = moves.length > 5 ? [...moves.slice(0, 5), `… +${moves.length - 5} more`] : moves;
   return [
     mutationEvent(
       "LockfileMutation",
       `go.sum changed outside the SupplyGuard gate ` +
-        `(${diff.added.length} line(s) added, ${diff.removed.length} removed)`,
-      { detail: { added: diff.added.length, removed: diff.removed.length } },
+        `(${diff.added.length} line(s) added, ${diff.removed.length} removed)` +
+        (shown.length === 0 ? "" : `: ${shown.join(", ")}`),
+      {
+        detail: {
+          added: diff.added.length,
+          removed: diff.removed.length,
+          ...(scannable.length === 0
+            ? {}
+            : { modules: scannable.map((m) => `${m.artifact}@${m.version}`).join(" ") }),
+        },
+      },
     ),
   ];
 }
-
 /**
  * Classify an observed change to a tracked Go file.
  *
@@ -241,7 +270,21 @@ function goSumEvents(mutation: FileMutation): readonly SupplyChainEvent[] {
  * command gate produces -- which is the point: `sed -i go.mod` and
  * `go get` reach the same trust decision.
  */
+const GO_OWNED_PATHS: Record<string, true> = {
+  [GO_MOD]: true,
+  [GO_SUM]: true,
+  [VENDOR_MODULES]: true,
+  [GO_WORK]: true,
+  [GO_WORK_SUM]: true,
+};
+
 function inspectGoFileMutation(mutation: FileMutation): readonly SupplyChainEvent[] {
+  // npm's manifests reach every adapter through the registry fan-out. An
+  // npm file this adapter does not recognize is npm's to report: claiming it
+  // here produced "[go] package-lock.json changed" evidence -- gated, but
+  // mislabeled and nameless next to what the npm adapter can say.
+  if (GO_OWNED_PATHS[mutation.path] !== true) return [];
+
   if (!mutation.contentAvailable) {
     return [
       mutationEvent(
@@ -280,6 +323,16 @@ export function createGoAdapter(
   proxy: ProxyOptions = {},
   osv: OsvOptions = { ...(proxy.env === undefined ? {} : { env: proxy.env }) },
 ): EcosystemAdapter {
+  const env: Readonly<Record<string, string | undefined>> = { ...(proxy.env ?? {}) };
+  // M11 quarantine: vendored modules this process has content-scanned.
+  const scannedVendorModules = new Set<string>();
+  // Event classes whose artifact is a module being taken on trust.
+  const DEPENDENCY_EVENT_CLASSES_FOR_SCOPE = new Set([
+    "DependencyAdd",
+    "DependencyUpgrade",
+    "DependencyReplace",
+    "ThirdPartyExecution",
+  ]);
   const releaseDates = new Map<string, ReleaseLookup>();
   const vulnerabilities = new Map<string, VulnerabilityLookup>();
 
@@ -335,6 +388,21 @@ export function createGoAdapter(
     writeGuardPrefixes: () => [VENDOR_PREFIX],
 
     inspectFileMutation: (mutation: FileMutation) => inspectGoFileMutation(mutation),
+
+    /**
+     * M10: local, offline content evidence. The vendor tree wins when present
+     * (it is what enforced builds compile from); otherwise the module cache.
+     * Private modules are scanned too -- reading locally sends nothing
+     * anywhere. When neither exists the scan says so, and the engine turns
+     * "uninspected" into a banner or a denial by profile.
+     */
+    resolveContentScan: async (artifact, version, ctx) => {
+      const located = await locateModuleSource(ctx.repoRoot, artifact, version, env);
+      if (located === undefined) {
+        return { scanned: false, reason: "no vendor tree and no module-cache copy" };
+      }
+      return { scanned: true, source: located.source, findings: await scanModuleSource(located.root) };
+    },
 
     /**
      * SPEC 9.2 -- ask ONCE whether to keep enforcing an existing vendor model.
@@ -435,6 +503,42 @@ export function createGoAdapter(
         });
       }
 
+      if (enforced && project.hasVendorTree) {
+        // M11 QUARANTINE: in paranoid, code compiled from an enforced vendor
+        // tree is content-scanned before the first build-shaped command that
+        // would run it. The scan runs HERE, lazily, once per module per
+        // process -- this is where the source exists, which is exactly why
+        // the approval-time banner (1.15) cannot be the deny.
+        if (ctx.profile === "paranoid" && ctx.classification === "THIRD_PARTY_CAPABLE") {
+          let scannedNow = 0;
+          for (const module of project.vendoredModules) {
+            const key = `${module.path}@${module.version}`;
+            if (scannedVendorModules.has(key)) continue;
+            const located = await locateModuleSource(ctx.repoRoot, module.path, module.version, env);
+            if (located === undefined) continue; // a missing tree is drift's finding
+            const findings = await scanModuleSource(located.root);
+            scannedVendorModules.add(key);
+            scannedNow += 1;
+            for (const finding of findings) {
+              events.push({
+                eventClass: "ArtifactAnomaly",
+                ecosystem: GO_ECOSYSTEM,
+                classification: "THIRD_PARTY_MUTATION",
+                artifact: module.path,
+                version: module.version,
+                summary: `${module.path}@${module.version}: ${finding.message} (${finding.file}:${finding.line})`,
+                detail: { rule: finding.rule, file: finding.file, line: finding.line },
+              });
+            }
+          }
+          if (scannedNow > 0) {
+            notes.push(
+              `vendor quarantine: content-scanned ${scannedNow} vendored module(s) before this build`,
+            );
+          }
+        }
+      }
+
       if (project.hasGoMod && !project.hasVendorTree) {
         if (ctx.profile === "paranoid" && ctx.classification === "THIRD_PARTY_MUTATION") {
           // SPEC 9.3: paranoid denies a dependency-changing operation until
@@ -463,7 +567,7 @@ export function createGoAdapter(
       return notes.length === 0 ? { events } : { events, notes };
     },
 
-    inspectToolCall(call: NormalizedToolCall, _ctx: AdapterContext): AdapterToolCallResult {
+    async inspectToolCall(call: NormalizedToolCall, ctx: AdapterContext): Promise<AdapterToolCallResult> {
       const command = shellCommand(call);
       if (command === undefined) {
         return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
@@ -479,8 +583,68 @@ export function createGoAdapter(
       // classes such as SecurityBypass deny in every profile and would flatten
       // that gradation.
       //
+
+      // M11 hermetic gate: with a vendor tree present, `-mod=mod` on a
+      // build-shaped command tells Go to fetch from the network instead of
+      // compiling the reviewed tree -- it un-enforces the vendor model one
+      // flag early, so it is denied in every profile.
+      const buildShaped =
+        analysis.classification === "THIRD_PARTY_CAPABLE" && analysis.operations.length === 0;
+      if (buildShaped) {
+        const project = await detectGoProject(ctx.repoRoot);
+        if (project.hasVendorTree) {
+          const fetching =
+            analysis.assignments.some(
+              (a) => a.name === "GOFLAGS" && a.value.includes("-mod=mod"),
+            ) || command.includes("-mod=mod");
+          if (fetching) {
+            events.push({
+              eventClass: "SecurityGateChange",
+              ecosystem: GO_ECOSYSTEM,
+              classification: "THIRD_PARTY_MUTATION",
+              summary:
+                "-mod=mod on a build command with a vendor tree present fetches from the " +
+                "network instead of compiling the reviewed vendored code. Build from the " +
+                "tree (drop the flag), or refresh it deliberately with `go mod vendor`.",
+              minimumDecision: "deny",
+            });
+          }
+        }
+      }
+
+      // M12: a scoped GOPRIVATE/GONOSUMDB that happens to cover the module
+      // being added is a checksum bypass for THAT module -- SPEC 2.1 keeps
+      // scoped patterns legal, and this rule is what keeps them honest.
+      for (const event of [...events]) {
+        const artifact = event.artifact;
+        if (artifact === undefined) continue;
+        if (!DEPENDENCY_EVENT_CLASSES_FOR_SCOPE.has(event.eventClass)) continue;
+        const exempted = analysis.assignments.find(
+          (a) =>
+            (a.name === "GOPRIVATE" || a.name === "GONOSUMDB") &&
+            isPrivateModule(artifact, { [a.name]: a.value }),
+        );
+        if (exempted !== undefined) {
+          events.push({
+            eventClass: "ChecksumBypass",
+            ecosystem: GO_ECOSYSTEM,
+            classification: "THIRD_PARTY_MUTATION",
+            artifact,
+            summary:
+              `${exempted.name}=${exempted.value} on this command exempts ${event.artifact} ` +
+              `from checksum verification: the add escapes the checksum database ` +
+              `through the environment the command sets for itself`,
+            minimumDecision: "deny",
+          });
+          break;
+        }
+      }
+
       return {
-        classification: analysis.classification,
+        classification:
+          buildShaped && events.length > 0
+            ? "THIRD_PARTY_MUTATION"
+            : analysis.classification,
         events,
         expectsManifestChange: analysis.writesManifests,
         ...(analysis.notes.length === 0 ? {} : { notes: analysis.notes }),

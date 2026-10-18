@@ -415,6 +415,102 @@ go:
   vendor: enforce
 ```
 
+## 8.5 Local Policy Rules
+
+Added by M15 (`docs/PLAN-LOCAL-POLICY.md`). Operator-authored rules, enforced
+offline in every profile, before execution:
+
+```yaml
+policies:
+  - id: no-force-push
+    match:
+      command: git             # wrapper-stripped parsed argv[0]
+      argsContain: ["--force"] # any argument containing any listed string
+    decision: ask              # warn | ask | deny -- never allow
+    reason: "rewrites shared history"
+  - id: protect-infra
+    match:
+      writePrefix: infra/      # shell writers AND write-shaped file tools
+    decision: deny
+```
+
+Matchers: `command`, `argsContain`, `toolName`, `writePrefix`, `readPrefix`,
+`pathGlob` (Node's `path.matchesGlob`: `*` within a segment, `**` across). All keys on
+one rule must hold. Matching reuses the adapters' shell parser and the
+sensitive-write shapes, so `sudo git push --force` and
+`sh -c 'git push --force'` match like the bare command; path operands are
+normalized (`./x`, `a/../x`, absolute-inside-repo) before comparison. Rules
+see shapes and paths, never file content.
+
+Composition follows the §8.2 lattice:
+
+- a rule may decide `warn`, `ask` or `deny`; `allow` is rejected at load,
+  because a standing exception could weaken a stricter layer;
+- rule findings fold with every other finding by most-restrictive (§6.1);
+- global and project rules are concatenated: a project rule adds to the
+  global rules and can never remove or replace one, even under the same
+  `id` — both apply;
+- a malformed rule is ignored with a warning in status and audit; its valid
+  siblings still apply. Ignoring a rule loses protection but cannot open a
+  hole, since rules only tighten;
+- a matching rule takes a call off the harmless fast path (§5.1): the rule
+  is the operator saying this call is not harmless here. A call no rule
+  matches is not audited and leaves the machine for nothing, as before.
+
+A headless `ask` from a rule fails closed like every other `ask`, so delegated
+workers inherit the operator's rules with no way past them.
+
+## 8.6 Sensitive-Data Rails
+
+Added by M16. Built in, every profile, offline; operators extend the corpus,
+never shrink it:
+
+```yaml
+sensitive:
+  neverSend: ["deploy/*.json", "*.tfstate"]   # unioned across layers
+```
+
+**Rail 2 — access tiers**, decided by command shape (`SensitiveAccess`):
+
+| Shape | Every profile |
+|---|---|
+| A sensitive path named to, or piped into, a network tool (`curl -d @.env`, `curl -F f=@.env`, `wget --post-file=.env`, `scp ~/.aws/credentials h:`, `cat .env \| base64 \| curl -d @- …`) | Deny |
+| Any other tool reading one (`cat .env`, the read tool, `tar ~/.gnupg`) | Ask |
+| Metadata only (`ls ~/.ssh`, name-only file tools) | Allow |
+
+A key passed by flag to the ssh family (`ssh -i ~/.ssh/id_rsa`) is a path
+used, not read; the same flag on `curl` (`-F`) is an upload.
+
+**Rail 1 — never-send predicate.** One function (`isSensitivePath`) decides
+what may never leave the machine for every sender: `.env*`, keys and certs,
+`.netrc`/`.npmrc`, `credentials`, `*secret*`/`*credential*`, tfvars/tfstate,
+and `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.gcloud`. A
+human approval authorizes an *execution*, never an *upload*.
+
+**Rail 3 — redaction.** Bearer tokens, `key=value` secrets, `sk-` keys and
+long hex runs are stripped from anything a provider receives.
+
+## 8.7 Execution Classifier (Experimental, Paranoid Only)
+
+Added by M17. A probabilistic second opinion on the agent's own
+*executions* — `rm -rf`, reverse shells in a local script, obfuscated
+payloads — which no supply-chain adapter considers. It is not a dependency
+verdict; malicious artifacts remain Socket's (§13).
+
+- Present only when the effective profile is `paranoid`, `jev.enabled` is
+  on, and `TYPESAFE_API_KEY`/`JEV_API_KEY` is set. Below paranoid the code
+  path does not load.
+- Consulted for shell commands before the harmless fast path, except
+  commands made only of read-only tools (`ls`, `cat`, `git status`, …),
+  which never leave the machine (§5.1).
+- Stage 1 reads the redacted command; stage 2 reads the one local script it
+  executes, unless rail 1 marks it sensitive — then nothing of it is sent
+  and the human is told.
+- Verdicts: harmful (p ≥ 0.7) → `ask`, capped while experimental; benign →
+  nothing, it never acquits; unavailable → `warn`, local policy stands
+  (deliberate deviation from §13.4's fail-closed: commands are not trust
+  decisions, and offline vendored builds must survive paranoid).
+
 ---
 
 # 9. Go Adapter — Project and Vendor Model
@@ -714,6 +810,13 @@ If no trust corpus exists:
 ---
 
 # 13. Socket.dev Integration
+
+
+> **Scope decision, 2026-10-14:** Socket Firewall (protected fetch, §13.9)
+> and the Socket manifest/project scan are **out of scope** and not planned.
+> §13.3, the protected-fetch clauses of §13.4 and §13.9 remain as design
+> history only. What ships: CLI artifact scoring and provider health,
+> additive-only, required in paranoid (§13.5).
 
 Socket is an external security provider, not a replacement for local SupplyGuard checks.
 
@@ -1233,12 +1336,18 @@ v1.0 is complete when:
 - Release cooldown and scoped override behavior work per profile.
 - Trust corpus enables component-aware typo/repository-squatting analysis.
 - Mutable GitHub Actions and installer pipelines are enforced.
-- Hardened asks once whether to enable Socket Firewall, remembers the choice, and audits it.
-- Paranoid requires Socket artifact + manifest evaluation and protected fetch for new third-party trust decisions.
+- Paranoid requires Socket artifact evaluation for new third-party trust decisions.
 - Paranoid fails closed on Socket outage/unscanned artifacts for new trust decisions while allowing unchanged vendored offline builds.
 - All security decisions and overrides are auditable.
 - Chief and spawned workers receive identical global enforcement.
 - The core remains ecosystem-independent so npm/Python adapters can be added without policy-engine redesign.
+
+**Scope decision, 2026-10-14:** Socket Firewall and the Socket manifest scan
+are **out of scope for v1.0** and not planned. §13.3, the protected-fetch
+clauses of §13.4 and all of §13.9 describe a capability that will not ship;
+they are retained as design history, not as commitments. The enforced
+contract is: Socket artifact scoring + health, additive-only, required in
+paranoid (§13.5).
 
 ---
 

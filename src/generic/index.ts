@@ -24,29 +24,57 @@ import {
   WORKFLOW_GLOBS,
 } from "./github-actions.ts";
 import {
+  downloadTargets,
+  executeOfDownloadedFile,
   GENERIC_ECOSYSTEM,
   inspectInstallers,
   inspectNetworkFetches,
 } from "./installers.ts";
-import { inspectSensitiveWrites } from "./sensitive-writes.ts";
+import {
+  pathLikeInputValues,
+  inspectNonShellWrite,
+  inspectSensitiveWrites,
+} from "./sensitive-writes.ts";
+import {
+  sensitiveAccessFromCommands,
+  sensitiveAccessFromPaths,
+} from "./sensitive-access.ts";
 import { parseShell } from "./shell.ts";
 
+/**
+ * Pull the shell command out of a tool call, by shape rather than tool name.
+ */
 function shellCommand(call: NormalizedToolCall): string | undefined {
   const command = call.input["command"];
   return typeof command === "string" && command.trim() !== "" ? command : undefined;
 }
 
 export function createGenericAdapter(): EcosystemAdapter {
+  // M12: files this process watched being downloaded, by any earlier call.
+  const downloadedFiles = new Set<string>();
   return {
     id: GENERIC_ECOSYSTEM,
-
     /** SPEC 14.1 lists workflow hashes in the snapshot set. */
     sensitivePaths: () => WORKFLOW_GLOBS,
 
     inspectToolCall(call: NormalizedToolCall, ctx: AdapterContext): AdapterToolCallResult {
       const command = shellCommand(call);
+      const extra = ctx.sensitiveGlobs ?? [];
       if (command === undefined) {
-        return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
+        const toolWrites = inspectNonShellWrite(
+          call.toolName,
+          call.input,
+          ctx.watchedPaths,
+          ctx.writeGuardPrefixes ?? [],
+        );
+        const sensitive = sensitiveAccessFromPaths(call.toolName, pathLikeInputValues(call.input), extra);
+        if (toolWrites.length === 0 && sensitive.length === 0) {
+          return { classification: "SUPPLY_CHAIN_IRRELEVANT", events: [] };
+        }
+        return {
+          classification: "THIRD_PARTY_MUTATION",
+          events: [...toolWrites, ...sensitive],
+        };
       }
 
       const parsed = parseShell(command);
@@ -56,12 +84,17 @@ export function createGenericAdapter(): EcosystemAdapter {
         ctx.watchedPaths,
         ctx.writeGuardPrefixes ?? [],
       );
+      for (const target of downloadTargets(parsed.commands)) downloadedFiles.add(target);
+      // Correlation AFTER remembering: `curl -o i.sh …; sh i.sh` in one
+      // command is the pipeline SPEC 15.2 denies, one separator later.
+      const correlated = executeOfDownloadedFile(parsed.commands, downloadedFiles);
       const events = [
         ...pipelines,
         ...writes,
+        ...correlated,
+        ...sensitiveAccessFromCommands(parsed.commands, extra),
         ...inspectNetworkFetches(parsed.commands, pipelines.length),
       ];
-
       if (events.length === 0) {
         // An unreadable command is the Go adapter's safety net to raise, not
         // this one's: raising UNKNOWN_RISK here too would double-report the
@@ -71,7 +104,7 @@ export function createGenericAdapter(): EcosystemAdapter {
 
       return {
         classification:
-          pipelines.length > 0 || writes.length > 0
+          pipelines.length > 0 || writes.length > 0 || correlated.length > 0
             ? "THIRD_PARTY_MUTATION"
             : "THIRD_PARTY_CAPABLE",
         events,

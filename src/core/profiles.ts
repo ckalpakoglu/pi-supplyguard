@@ -85,6 +85,8 @@ export const EVENT_BASELINE = {
   ToolUpgrade: { standard: "ask", hardened: "ask", paranoid: "ask" },
   // SPEC 13.7: download-and-execute is at least as strict as an addition.
   ThirdPartyExecution: { standard: "ask", hardened: "ask", paranoid: "ask" },
+  // Local content-scan findings (M10): the human is shown code, and decides.
+  ArtifactAnomaly: { standard: "ask", hardened: "ask", paranoid: "ask" },
   LockfileMutation: { standard: "ask", hardened: "ask", paranoid: "ask" },
   // Removal reduces third-party surface; it is recorded, not gated.
   DependencyRemove: { standard: "warn", hardened: "warn", paranoid: "warn" },
@@ -104,6 +106,9 @@ export const EVENT_BASELINE = {
   NetworkRequirement: { standard: "allow", hardened: "ask", paranoid: "deny" },
   RegistryAccess: { standard: "allow", hardened: "warn", paranoid: "ask" },
   DependencyFetch: { standard: "allow", hardened: "warn", paranoid: "ask" },
+  // M16: reading sensitive paths asks in every profile; the egress-coupled
+  // tier carries its own deny floor on the event.
+  SensitiveAccess: { standard: "ask", hardened: "ask", paranoid: "ask" },
 } as const satisfies Record<SupplyChainEventClass, ProfileDecisionRow>;
 
 /**

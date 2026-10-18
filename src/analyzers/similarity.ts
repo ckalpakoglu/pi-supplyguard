@@ -13,6 +13,27 @@
  * -- is the whole reason a plain Levenshtein distance is not enough here.
  */
 
+/**
+ * Confusable-character normalization (M14): a Cyrillic `о` in a module path
+ * is not a different letter to a human reading it, only to the bytes. The
+ * table is the common Latin-lookalike set; deliberately small and auditable
+ * rather than exhaustive.
+ */
+const CONFUSABLES: Readonly<Record<string, string>> = {
+  "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y", "і": "i",
+  "ѕ": "s", "ԁ": "d", "ɡ": "g", "ν": "v", "ο": "o", "α": "a", "τ": "t", "ϲ": "c",
+  "․": ".", "𝗋": "r", "𝗇": "n",
+};
+
+/** Lowercase, confusables folded to their Latin lookalike. */
+export function normalizeIdentity(value: string): string {
+  let out = "";
+  for (const char of value.toLowerCase()) {
+    out += CONFUSABLES[char] ?? char;
+  }
+  return out;
+}
+
 /** Longest input compared; identities are short and this bounds the work. */
 const MAX_LENGTH = 256;
 
@@ -87,7 +108,7 @@ export const SHORT_IDENTIFIER_MAX_DISTANCE = 1;
  * lands under every threshold.
  */
 export function normalizeIdentifier(value: string): string {
-  return value.toLowerCase().replace(/[-_.]/g, "");
+  return normalizeIdentity(value.toLowerCase().replace(/[-_.]/g, ""));
 }
 
 export interface SimilarityVerdict {

@@ -1,12 +1,13 @@
 # HANDOFF
 
-**Last updated:** 2026-09-02
-**Branch:** `feature/m3-manifest-engine` → merged to `main`
-**State:** `npm run check` green — typecheck clean, full suite passing. The
-suite is instrumented to make zero network calls and start zero processes.
+**Last updated:** 2026-10-11
+**Branch:** `feature/local-policy-engine` (cut from `feature/zero-day-hardening`;
+`main` does not yet contain M10 onward)
+**State:** `npm run check` green — 494 tests, typecheck clean. The suite is
+instrumented to make zero network calls and start zero processes;
+`test/live/` is the `LIVE=1` exception.
 
-All nine milestones are closed. What v1.0 still needs is in
-"SPEC §25 audit" below.
+M1–M18 are closed. What v1.0 still needs is in "SPEC §25 audit" below.
 
 This file is navigation for whoever picks the project up next. It does not
 duplicate `docs/KNOWN-GAPS.md`, which is the authoritative record of what is
@@ -18,8 +19,9 @@ duplicate `docs/KNOWN-GAPS.md`, which is the authoritative record of what is
 
 `pi-supplyguard` is a Pi coding-agent extension that makes dependency, tooling,
 build and CI supply-chain trust decisions explicit, reviewable, enforceable
-before execution, and auditable. Go is the first ecosystem; the policy core is
-ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
+before execution, and auditable. Go and npm are the ecosystems today; the
+policy core is ecosystem-agnostic, so Python/Cargo arrive as adapters, not as
+engine changes.
 
 ## Authoritative sources, in order
 
@@ -42,6 +44,15 @@ ecosystem-agnostic so npm/Python arrive as adapters, not as engine changes.
 | M7 | Socket integration: artifact/manifest scans, health, Firewall | Scans + health complete; Firewall out of scope by decision |
 | M8 | Generic policies: GitHub Actions SHA pinning, `curl\|sh`, network events | Complete |
 | M9 | Adversarial hardening: indirect mutation, headless, Chief/worker parity, bypass corpus | Complete |
+| M10 | Local content evidence before approval | Complete |
+| M11 | Blast radius: hermetic build gate, paranoid vendor quarantine | Complete |
+| M12 | Named bypasses: fetch→execute correlation, digests, `GOPRIVATE` scopes, out-of-band watch | Complete |
+| M13 | npm adapter: commands, lockfiles (v1–v3), lifecycle scripts | Complete |
+| M14 | Freshness: replay corpus, live contracts, homoglyphs, corpus tooling, signals | Complete |
+| M15 | Local policy rules: operator `policies:`, offline, tighten-only | Complete |
+| M16 | Sensitive-data rails: exfiltration denied, sensitive reads asked, never-send predicate, redaction | Complete |
+| M17 | Execution classifier: paranoid-only, ASK-capped, fail-soft, behind the rails | Complete (experimental) |
+| M18 | Adversarial corpus for rules and rails (D24/D25 closed), live classifier canary | Complete |
 
 ## Layout
 
@@ -60,14 +71,21 @@ src/core/justification.ts the agent's rationale (SPEC 11.2); one-shot, in-memory
 src/core/release-age.ts   the cooldown policy; the date comes from an adapter
 src/core/trust.ts         the protected identity corpus; NOT an allow-list
 src/core/vulnerability.ts severity policy; the database is an adapter's business
-src/analyzers/            similarity and component-aware identity analysis
+src/analyzers/            identity analysis and the local content scanner (M10)
 src/adapters/registry.ts  the adapter contract
 src/adapters/go/          the only code that knows what `go get` means
-src/adapters/go/proxy.ts  the ONLY outbound request; GOPRIVATE honored first
-src/generic/            rules that belong to no ecosystem, registered as an adapter
-src/generic/sensitive-writes.ts  manifest writes gated BEFORE they land (M9)
-src/providers/socket/   the ONLY process SupplyGuard starts; env is allow-listed
-src/generic/shell.ts      shell parser shared by command analysis
+src/adapters/go/proxy.ts  release dates; GOPRIVATE honored before any request
+src/adapters/go/osv.ts    advisories; the same GOPRIVATE rule
+src/adapters/npm/         commands, package.json/lockfile semantics (M13)
+src/generic/              rules that belong to no ecosystem, registered as an adapter
+src/generic/sensitive-writes.ts  manifest and vendored-tree writes gated BEFORE they land
+src/generic/shell.ts      shell parser shared by command analysis and policy rules
+src/policy/               local policy rules: schema (rules.ts), matching (match.ts)
+src/generic/sensitive-access.ts  M16 rails: tiers, never-send predicate, redaction
+src/generic/execution.ts  M17: what may leave the machine, decided locally
+src/providers/socket/     the ONLY process SupplyGuard starts; env is allow-listed
+src/providers/jev/        optional analyzer; dynamic import, never a dependency
+src/providers/signals/    optional repository signals (GitHub API)
 ```
 
 ## Load-bearing design decisions
@@ -99,13 +117,24 @@ src/generic/shell.ts      shell parser shared by command analysis
 - **Dependency mutations are Chief-only** (human decision, 2026-09-01, in
   `AGENTS.md`). A headless worker's `ASK` fails closed. Do not add a bypass.
 - **The Pi host package is deliberately not installed.** `types/pi-coding-agent.d.ts`
-  is hand-written; see KNOWN-GAPS §1.9 for what has and has not been verified.
+  is hand-written; see KNOWN-GAPS §1.11 for what has and has not been verified.
+- **Local policy rules only tighten.** No `allow` decision exists, and global
+  and project rules concatenate — no dedupe by id. Dedupe was a real hole: a
+  project rule reusing a global id could replace the operator's rule. Rules
+  reuse `generic/shell.ts` and the sensitive-write shapes; do not give them a
+  parser of their own.
+- **Deterministic floor, probabilistic ceiling.** The rails and the
+  classifier's targeting run locally BEFORE any provider is asked; the
+  classifier never decides whether its own guardrails apply. Its verdicts
+  are external findings: they can add an `ask`, never remove one.
 
-## SPEC §25 audit — what v1.0 still needs
+## SPEC §25 audit — v1.0 status
 
-The roadmap is finished; the v1.0 success criteria are not, and the gap is one
-subsystem rather than a long tail. Fourteen of the seventeen criteria hold and
-have tests:
+All fifteen v1.0 success criteria hold and have tests. The two former
+shortfalls were Socket Firewall criteria removed by the scope decision of
+2026-10-14 (SPEC §25, KNOWN-GAPS §1.5): Firewall and the manifest scan are
+out of scope and not planned. The amended "Paranoid requires Socket
+artifact evaluation" criterion is met.
 
 | Criterion | State |
 |---|---|
@@ -120,19 +149,11 @@ have tests:
 | Release cooldown and scoped override behavior per profile | Met |
 | Trust corpus enables component-aware typo/repository-squatting analysis | Met |
 | Mutable GitHub Actions and installer pipelines enforced | Met |
+| Paranoid requires Socket artifact evaluation for new trust decisions | Met |
 | Paranoid fails closed on provider outage, vendored offline builds still work | Met |
 | All security decisions and overrides auditable | Met |
 | Chief and spawned workers receive identical enforcement | Met |
 | The core remains ecosystem-independent | Met |
-| **Hardened asks once whether to enable Socket Firewall** | **Not met** |
-| **Paranoid requires Socket manifest evaluation and protected fetch** | **Partly** — artifact scanning only |
-
-All three shortfalls are the same decision: M7 integrates the Socket CLI, not
-Socket Firewall (`docs/KNOWN-GAPS.md` §1.5). Closing them means a protected
-fetch path — proxy, registry or wrapper, capability-detected per SPEC §13.9 —
-plus `socket scan create` for the manifest scan, plus the ask-once Hardened
-prompt, for which the machinery already exists and is in service for the vendor
-question.
 
 Two other things stand between the current tree and a release:
 

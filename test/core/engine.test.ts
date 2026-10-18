@@ -269,6 +269,7 @@ test("an internal engine failure fails closed", async () => {
       size: () => 0,
       sensitivePaths: () => [],
       writeGuardPrefixes: () => [],
+      resolveContentScan: async () => undefined,
       inspectFileMutations: async () => ({ events: [], errors: [], notes: [] }),
       inspectProjectState: async () => ({ events: [], errors: [], notes: [] }),
       projectDecisions: async () => [],

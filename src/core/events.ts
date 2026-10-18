@@ -22,11 +22,13 @@ export const SUPPLY_CHAIN_EVENT_CLASSES = [
   "ChecksumBypass",
   "RegistryAccess",
   "DependencyFetch",
+  "ArtifactAnomaly",
   "CIReferenceAdd",
   "CIReferenceChange",
   "NetworkRequirement",
   "SecurityGateChange",
   "SecurityBypass",
+  "SensitiveAccess",
 ] as const;
 
 export type SupplyChainEventClass = (typeof SUPPLY_CHAIN_EVENT_CLASSES)[number];

