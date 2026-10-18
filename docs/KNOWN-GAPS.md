@@ -594,8 +594,16 @@ M17 (SPEC §8.7):
 - **Command text leaves the machine** in paranoid when enabled: redacted, but
   redaction is pattern-based and can miss a credential of an unknown shape.
 - **Only one script per command** is read for stage 2, up to 256 KiB.
-- **Unproven against the live endpoint** until the `LIVE=1` canary has run
-  with a key (D18's lesson).
+- **Live-proven (2026-10-18), after D27.** The `LIVE=1` canary is green, and
+  five real-world cases (supplyguard-lab `p7-jev-classifier`) went 5/5
+  across two runs: a benign build proceeded; `rm -rf`, a `/dev/tcp` reverse
+  shell, a base64-decoded `curl | bash` and a trojan script were each gated
+  at p=0.98–0.99. Five cases is a smoke test, not a precision measurement —
+  the ASK cap stays.
+- **Without it, paranoid does not see these shapes.** The p7 control run (no
+  key) let all five through: no rule, rail or baseline covers destruction,
+  reverse shells, decoded payloads or exfiltration of non-corpus files. The
+  classifier is the only layer for that class, and it is opt-in.
 
 ---
 

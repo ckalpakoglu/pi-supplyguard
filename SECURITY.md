@@ -181,7 +181,7 @@ Trust boundaries:
 | Incident replay corpus; live contract tests | **In CI** (M14) |
 | Local policy rules (operator-defined, offline, tighten-only) | **Enforced** (M15) |
 | Sensitive-data rails: exfiltration denied, sensitive reads asked | **Enforced** (M16; bypasses D24/D25 closed in M18) |
-| Execution classifier, paranoid-only, ASK-capped | **Experimental** (M17; live endpoint unproven until the `LIVE=1` canary runs) |
+| Execution classifier, paranoid-only, ASK-capped | **Experimental**, live-proven (M17; D27 fixed the API contract; 5/5 real-world cases, 2026-10-18) |
 | Adversarial bypass corpus for rules and rails | **In CI** (M18) |
 
 ## Supply-chain policy for this project itself
